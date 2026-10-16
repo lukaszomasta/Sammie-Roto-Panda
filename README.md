@@ -4,7 +4,7 @@ A personal fork of [Sammie-Roto 2](https://github.com/Zarxrax/Sammie-Roto-2) by 
 
 > **Models are not included and mostly not downloaded for you.** Several of them are gated on Hugging Face, so you need to accept their licenses and download them yourself. The [Models](#models) section lists every file and where it goes.
 
-Tested on Linux with NVIDIA GPUs (RTX 4060 8 GB, CUDA 13.0, PyTorch 2.10). The additions have not been tested on Windows or macOS.
+Tested on Rocky Linux with NVIDIA GPUs (RTX 4060 8 GB and RTX 5000 32 GB, CUDA 13.0, PyTorch 2.10). The additions have not been tested on Windows or macOS.
 
 ## What's new
 
