@@ -50,7 +50,7 @@ Gated: request access at [facebook/sam3](https://huggingface.co/facebook/sam3) f
 | Model | Files | Source | Put it in |
 |---|---|---|---|
 | ViTMatte | `ViTMatte_S_DIS.pth`, `ViTMatte_B_DIS.pth` | [nielsr/vitmatte-checkpoints](https://huggingface.co/nielsr/vitmatte-checkpoints) | `checkpoints/vitmatte/` |
-| MEMatte | `MEMatte_ViTS_DIM.pth`, `MEMatte_ViTB_DIM.pth`, `MEMatte.pth` | Google Drive links in the [MEMatte repository](https://github.com/linyiheng123/MEMatte) | `checkpoints/mematte/` |
+| MEMatte | `MEMatte_ViTS_DIM.pth` ([Google Drive](https://drive.google.com/file/d/122p3sdhJVb7vg4IXELeC9C3HEG9Mlh5z/view)), `MEMatte_ViTB_DIM.pth` ([Google Drive](https://drive.google.com/file/d/1NOV64zMSFtoKPASqvEvxQKI_PRY9m5IA/view)), `MEMatte.pth`: the real-world (AIM-500) ViT-S model, saved under this name ([Google Drive](https://drive.google.com/file/d/1R5NbgIpOudKjvLz1V9M9SxXr1ovAmu3u/view)) | [MEMatte repository](https://github.com/linyiheng123/MEMatte) | `checkpoints/mematte/` |
 
 ### LTX Alpha (panda.2)
 
@@ -103,7 +103,9 @@ When everything is in place, `checkpoints/ltx_alpha/` holds the video VAE, the a
 
 - **Sammie-Roto** and this fork's code: [GPL-3.0](LICENSE).
 - **LTX-2 code and weights** (Lightricks): [LTX-2.x Community License](https://github.com/Lightricks/LTX-2/blob/main/LICENSE-2_x). Not included in this repository. Among other terms, organizations with annual revenue of $10M or more need a paid commercial license from Lightricks.
-- **SAM3** (Meta), **ViTMatte**, **MEMatte**, **Gemma** and the upstream models are covered by their own licenses; check each source before use.
+- **ViTMatte** code in `sammie/vitmatte/`: MIT ([LICENSE](sammie/vitmatte/LICENSE)). **MEMatte** code in `sammie/mematte/`: MIT, as stated in its README ([LICENSE](sammie/mematte/LICENSE)).
+- **Gemma 4** is released under Apache 2.0. It is only used once, to make the LTX empty-prompt embedding, and is never shipped or loaded by Sammie.
+- **SAM3** (Meta) and the upstream models' weights are covered by their own licenses; check each source before use.
 
 This fork is not affiliated with Zarxrax, Lightricks, Meta or Google.
 
