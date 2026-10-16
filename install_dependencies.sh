@@ -108,9 +108,12 @@ pip3 install -r requirements.txt
 
 # detectron2 (ViTMatte / MEMatte) builds against the installed torch, so it needs
 # --no-build-isolation and a C++ compiler.
+# On macOS this needs the Xcode command line tools (xcode-select --install).
 echo "Installing detectron2..."
-pip3 install --no-build-isolation \
-    "git+https://github.com/facebookresearch/detectron2.git@02b5c4e295e990042a714712c21dc79b731e8833"
+if ! pip3 install --no-build-isolation \
+    "git+https://github.com/facebookresearch/detectron2.git@02b5c4e295e990042a714712c21dc79b731e8833"; then
+    echo "WARNING: detectron2 failed to build. Sammie still works; only ViTMatte and MEMatte are unavailable."
+fi
 
 # LTX-2 code for the LTX Alpha matting model. It is licensed separately from Sammie
 # (LTX-2 Community License), so it is not part of this repository.
@@ -123,6 +126,10 @@ if [[ "$LTX_ANSWER" =~ ^[Yy]$ ]]; then
     pip3 install --no-deps \
         "ltx-core @ git+https://github.com/Lightricks/LTX-2.git@${LTX_REF}#subdirectory=packages/ltx-core" \
         "ltx-pipelines @ git+https://github.com/Lightricks/LTX-2.git@${LTX_REF}#subdirectory=packages/ltx-pipelines"
+    # Apple Silicon: LTX-2's attention kernel on MPS (an ltx-core dependency skipped by --no-deps).
+    if [[ "$OS_TYPE" == "Darwin" && "$(uname -m)" == "arm64" ]]; then
+        pip3 install "mps-sdpa>=0.2.0"
+    fi
 fi
 
 echo "Setup complete. Models are not downloaded automatically - see README.md."

@@ -41,6 +41,14 @@ def has_fused(models_dir=LTX_DIR):
     return os.path.exists(os.path.join(models_dir, FUSED_FP8))
 
 
+def fp8_supported(device):
+    """fp8 weights are upcast per layer on the GPU; only verified on NVIDIA (CUDA).
+
+    Elsewhere (Apple MPS, Intel XPU) the bf16 transformer + LoRA are used instead.
+    """
+    return torch.device(device).type == "cuda"
+
+
 def missing_code():
     """LTX-2 packages that are not importable (installed separately, see README)."""
     import importlib.util
@@ -55,13 +63,20 @@ def embed_cache_path(models_dir=LTX_DIR):
     return legacy if not os.path.exists(path) and os.path.exists(legacy) else path
 
 
-def missing_files(models_dir=LTX_DIR):
-    needed = COMMON_FILES + ((FUSED_FP8,) if has_fused(models_dir) else (TRANSFORMER, LORA))
+def missing_files(models_dir=LTX_DIR, fp8=True):
+    """Files still needed; with fp8=False (non-NVIDIA GPUs) the fp8 build can't be used."""
+    use_fused = fp8 and has_fused(models_dir)
+    needed = COMMON_FILES + ((FUSED_FP8,) if use_fused else (TRANSFORMER, LORA))
     missing = [f for f in needed if not os.path.exists(os.path.join(models_dir, f))]
     if EMBED_CACHE in missing and os.path.exists(embed_cache_path(models_dir)):
         missing.remove(EMBED_CACHE)
     if TRANSFORMER in missing:
-        missing[missing.index(TRANSFORMER)] = f"{FUSED_FP8} (or {TRANSFORMER} + {LORA})"
+        if fp8:
+            missing[missing.index(TRANSFORMER)] = f"{FUSED_FP8} (or {TRANSFORMER} + {LORA})"
+        elif has_fused(models_dir):
+            missing[missing.index(TRANSFORMER)] = (
+                f"{TRANSFORMER} (the fp8 build {FUSED_FP8} needs an NVIDIA GPU)"
+            )
     return missing
 
 
@@ -72,13 +87,22 @@ def snap_up_8n1(n):
 
 def _available_ram():
     try:
-        with open("/proc/meminfo") as f:
-            for line in f:
-                if line.startswith("MemAvailable:"):
-                    return int(line.split()[1]) * 1024
-    except OSError:
-        pass
-    return 0
+        import psutil  # installed with accelerate; works on Linux, Windows and macOS
+
+        return psutil.virtual_memory().available
+    except Exception:
+        return 0
+
+
+def _no_fp16_autocast(device):
+    """Sammie enables float16 autocast on MPS and pre-Ampere CUDA; LTX is a bf16 model and
+    can overflow in float16, so switch autocast off for it there."""
+    kind = device.type
+    try:
+        fp16 = torch.is_autocast_enabled(kind) and torch.get_autocast_dtype(kind) == torch.float16
+    except (RuntimeError, TypeError):
+        fp16 = False
+    return torch.autocast(kind, enabled=False) if fp16 else contextlib.nullcontext()
 
 
 class _CachedPromptEncoder:
@@ -172,19 +196,27 @@ class LTXAlphaPipeline:
         self.device = torch.device(device)
         self.video_vae_path = path(VIDEO_VAE)
 
-        self.fused = has_fused(models_dir)
+        fp8 = fp8_supported(self.device)
+        self.fused = fp8 and has_fused(models_dir)
         if self.fused:
             transformer, loras = path(FUSED_FP8), []
         else:
             transformer = path(TRANSFORMER)
             loras = [LoraPathStrengthAndSDOps(path(LORA), 1.0, LTXV_LORA_COMFY_RENAMING_MAP)]
 
-        vram = torch.cuda.get_device_properties(self.device).total_memory if self.device.type == "cuda" else 0
-        self.offload = OffloadMode.NONE if vram >= _FULL_GPU_VRAM else OffloadMode.CPU
+        if self.device.type == "cuda":
+            vram = torch.cuda.get_device_properties(self.device).total_memory
+            self.offload = OffloadMode.NONE if vram >= _FULL_GPU_VRAM else OffloadMode.CPU
+        elif self.device.type == "mps":
+            # Apple unified memory: GPU and "CPU" are the same RAM, so streaming gains nothing.
+            self.offload = OffloadMode.NONE
+        else:
+            self.offload = OffloadMode.CPU
         # Standard (non-streaming) builds re-read the transformer for every batch unless
         # the registry keeps its weights; streaming builds manage their own CPU cache.
         cache_weights = (
             self.offload == OffloadMode.NONE
+            and self.device.type != "mps"  # a RAM copy would double unified-memory use
             and _available_ram() > os.path.getsize(transformer) + _RAM_HEADROOM
         )
         registry = ModelRegistry(cache_models=True, cache_weights=cache_weights)
@@ -204,7 +236,7 @@ class LTXAlphaPipeline:
                 spatial_upsampler_path="",  # stage 2 is always skipped
                 loras=loras,
                 device=self.device,
-                quantization=build_policy(transformer),
+                quantization=build_policy(transformer) if fp8 else None,
                 registry=registry,
                 offload_mode=self.offload,
             )
@@ -256,7 +288,7 @@ class LTXAlphaPipeline:
         ref_path = os.path.join(work_dir, "ltx_reference.mkv")
         _write_reference_video(frames_rgb, ref_path, fps)
         try:
-            with _step_hook(step_callback):
+            with _step_hook(step_callback), _no_fp16_autocast(self.device):
                 # Stage 1 renders at half the requested size, so ask for 2x.
                 result = self.pipeline(
                     prompt="",

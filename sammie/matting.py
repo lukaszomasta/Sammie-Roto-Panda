@@ -9,8 +9,6 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QProgressDialog
 from sammie.model_downloader import ensure_models, ensure_local_model, MODEL_REGISTRY
 from sammie.settings_manager import get_settings_manager
-from detectron2.config import LazyConfig, instantiate
-from detectron2.checkpoint import DetectionCheckpointer
 from tqdm import tqdm
 from sammie import core
 
@@ -18,6 +16,24 @@ from sammie import core
 # ---------------------------------------------------------------------------
 # General Helpers
 # ---------------------------------------------------------------------------
+
+def _import_detectron2(parent_window):
+    """detectron2 (ViTMatte / MEMatte only) is optional; it is hard to build on Windows."""
+    try:
+        from detectron2.checkpoint import DetectionCheckpointer
+        from detectron2.config import LazyConfig, instantiate
+    except ImportError as e:
+        from PySide6.QtWidgets import QMessageBox
+
+        QMessageBox.warning(
+            parent_window,
+            "detectron2 Missing",
+            "ViTMatte and MEMatte need detectron2, which is not installed:\n\n"
+            f"{e}\n\nSee \"Installation\" in README.md. The other matting models work without it.",
+        )
+        return None
+    return LazyConfig, instantiate, DetectionCheckpointer
+
 
 def generate_trimap(mask: np.ndarray, erode_pct: float = 2.5, dilate_pct: float = 2.5,
                      min_kernel: int = 3) -> np.ndarray:
@@ -1448,7 +1464,7 @@ class LTXAlphaManager(MattingManager):
 
     def load_matting_model(self, load_to_cpu=False, parent_window=None):
         from PySide6.QtWidgets import QMessageBox
-        from sammie.ltx_alpha import LTX_DIR, LTXAlphaPipeline, missing_code, missing_files
+        from sammie.ltx_alpha import LTX_DIR, LTXAlphaPipeline, fp8_supported, missing_code, missing_files
 
         missing = missing_code()
         if missing:
@@ -1460,7 +1476,8 @@ class LTXAlphaManager(MattingManager):
                 + "\n\nSee \"LTX Alpha setup\" in README.md.",
             )
             return False
-        missing = missing_files()
+        device = self._prepare_device(load_to_cpu)
+        missing = missing_files(fp8=fp8_supported(device))
         if missing:
             QMessageBox.warning(
                 parent_window,
@@ -1471,7 +1488,6 @@ class LTXAlphaManager(MattingManager):
             )
             return False
 
-        device = self._prepare_device(load_to_cpu)
         try:
             self.pipeline = LTXAlphaPipeline(device)
         except Exception as e:
@@ -1779,6 +1795,10 @@ class ViTMatteManager(MattingManager):
 
         if not ensure_models(registry_key, parent=parent_window):
             return False
+        d2 = _import_detectron2(parent_window)
+        if d2 is None:
+            return False
+        LazyConfig, instantiate, DetectionCheckpointer = d2
 
         device = 'cpu' if load_to_cpu else core.DeviceManager.get_device()
 
@@ -1908,6 +1928,10 @@ class MEMatteManager(MattingManager):
 
         if not ensure_local_model(registry_key, parent=parent_window):
             return False
+        d2 = _import_detectron2(parent_window)
+        if d2 is None:
+            return False
+        LazyConfig, instantiate, DetectionCheckpointer = d2
 
         device = 'cpu' if load_to_cpu else core.DeviceManager.get_device()
 

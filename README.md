@@ -13,12 +13,25 @@ Tested on Rocky Linux with NVIDIA GPUs (RTX 4060 8 GB and RTX 5000 32 GB, CUDA 1
 - Runs fully offline: the empty text prompt is pre-encoded once, so the 24 GiB Gemma text encoder is never loaded at runtime.
 - Optional fp8 build of the transformer with the LoRA fused in (21.9 GiB instead of 39.1 + 1.2 GiB; a two-batch test ran 2.7× faster).
 - Fixed: a fresh install crashed on startup with `Unrecognized SAM2 model name: 'Base'`.
+- Windows and macOS: `install_dependencies.bat` works from a git clone (venv) and `run_sammie.bat` was added; detectron2 is optional, so Sammie starts without it; LTX Alpha uses bf16 on non-NVIDIA GPUs and disables float16 autocast, which can overflow this model.
 
 **2.3.3+panda.1**
 - **SAM3** segmentation model.
 - **ViTMatte** (S and B, DIS) and **MEMatte** (ViT-S, ViT-B, and the real-world model) image matting models.
 
-## Installation (Linux)
+## Platform support
+
+| | Linux + NVIDIA | Windows + NVIDIA | macOS (Apple Silicon) |
+|---|---|---|---|
+| Upstream features, SAM3 | tested | as upstream | as upstream |
+| ViTMatte, MEMatte | tested | needs detectron2 built with Visual Studio C++ Build Tools | needs detectron2 (Xcode command line tools) |
+| LTX Alpha | tested (8 GB and 32 GB GPUs) | expected to work like Linux; not tested | bf16 transformer + LoRA only (no fp8); needs 64 GB+ unified memory; not tested |
+
+Without detectron2 Sammie still starts; only ViTMatte and MEMatte are unavailable.
+
+## Installation
+
+### Linux and macOS
 
 ```bash
 git clone https://github.com/lukaszomasta/Sammie-Roto-Panda.git
@@ -27,7 +40,19 @@ bash install_dependencies.sh
 ./run_sammie.command
 ```
 
-The installer creates `venv/`, installs PyTorch (choose CUDA 13.0 for RTX cards), the requirements and detectron2 (needs a C++ compiler), and offers to install the LTX-2 code (see [LTX Alpha setup](#ltx-alpha-setup)).
+The installer creates `venv/`, installs PyTorch (choose CUDA 13.0 for RTX cards), the requirements and detectron2 (needs a C++ compiler; on macOS run `xcode-select --install` first), and offers to install the LTX-2 code (see [LTX Alpha setup](#ltx-alpha-setup)).
+
+### Windows
+
+1. Install [Python 3.12](https://www.python.org/downloads/) and [git](https://git-scm.com/download/win). For ViTMatte and MEMatte, also install [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with "Desktop development with C++".
+2. Clone the repository (or download it as a zip):
+   ```bat
+   git clone https://github.com/lukaszomasta/Sammie-Roto-Panda.git
+   cd Sammie-Roto-Panda
+   ```
+3. Run `install_dependencies.bat` and answer its questions, then start Sammie with `run_sammie.bat`.
+
+The installer uses the embedded Python from the upstream release zip if `python-3.12.8-embed-amd64\` is present; otherwise it creates `venv\`.
 
 ## Models
 
@@ -79,7 +104,7 @@ To build the files yourself instead:
      "ltx-core @ git+https://github.com/Lightricks/LTX-2.git@${LTX_REF}#subdirectory=packages/ltx-core" \
      "ltx-pipelines @ git+https://github.com/Lightricks/LTX-2.git@${LTX_REF}#subdirectory=packages/ltx-pipelines"
    ```
-   This is the exact LTX-2 revision Sammie was tested with (v1.4.2 + 2 commits).
+   On Windows, use `venv\Scripts\pip` instead of `venv/bin/pip`, with the same arguments on one line. On Apple Silicon also run `venv/bin/pip install "mps-sdpa>=0.2.0"`. This is the exact LTX-2 revision Sammie was tested with (v1.4.2 + 2 commits).
 
 2. **Encode the empty prompt** (once; CPU, about 23 GB RAM and 6–8 minutes):
    ```bash
@@ -96,6 +121,8 @@ To build the files yourself instead:
 4. Put a copy of the [LTX-2.x Community License](https://github.com/Lightricks/LTX-2/blob/main/LICENSE-2_x) next to the weights.
 
 When everything is in place, `checkpoints/ltx_alpha/` holds the video VAE, the audio VAE, `empty_prompt_embeddings.safetensors`, and either the fp8 fused transformer or the bf16 transformer + LoRA. If something is missing, Sammie lists exactly what when you load the model.
+
+**Apple Silicon.** The fp8 build needs an NVIDIA GPU, so on a Mac use the bf16 transformer + LoRA (skip step 3, or keep them after it). The model then lives in unified memory: plan on 64 GB or more. This setup has not been tested.
 
 **Hardware.** GPUs with 30 GiB of VRAM or more keep the whole model on the GPU. Smaller GPUs stream the transformer from system RAM. An 8 GB RTX 4060 with 62 GB RAM runs a 992×576 crop in batches of 49 frames (about 2.5 minutes per batch, 5.1 GiB VRAM peak). Resolutions of 1088 and above may run out of memory.
 
