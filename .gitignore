@@ -23,9 +23,12 @@ sammie_settings.conf
 *.log
 
 # Portable-build files
-SHA256SUMS
+SHA256SUMS*
 DEPLOY_NOTES.txt
 *.tar
 
 # Hugging Face release staging (see hf_release/README.md)
 hf_release/
+
+# Windows wheel downloads (build step for the air-gapped Windows package)
+win_wheels/
