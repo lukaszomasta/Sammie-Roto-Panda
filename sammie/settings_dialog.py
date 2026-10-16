@@ -1,0 +1,438 @@
+# sammie/settings_dialog.py
+from PySide6.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QTabWidget,
+    QGroupBox, QLabel, QSpinBox, QDoubleSpinBox, QCheckBox, 
+    QComboBox, QSlider, QWidget, QFormLayout, QScrollArea,
+    QDialogButtonBox
+)
+from PySide6.QtCore import Qt
+from sammie.settings_manager import SettingsManager
+from sammie.gui_widgets import (
+    ColorPickerWidget
+)
+
+class SettingsDialog(QDialog):
+    """Settings dialog for configuring application and default session settings"""
+    
+    def __init__(self, settings_manager: SettingsManager, parent=None):
+        super().__init__(parent)
+        self.settings_mgr = settings_manager
+        self.setWindowTitle("Settings")
+        self.setModal(True)
+        self.resize(450, 500)
+        
+        # Store original settings for cancel functionality
+        self._original_app_settings = self._backup_app_settings()
+        
+        self._init_ui()
+        self._load_current_values()
+        
+    def _backup_app_settings(self):
+        """Create a backup of current application settings"""
+        from sammie.settings_manager import ApplicationSettings
+        import copy
+        return copy.deepcopy(self.settings_mgr.app_settings)
+    
+    def _restore_app_settings(self):
+        """Restore application settings from backup"""
+        self.settings_mgr.app_settings = self._original_app_settings
+    
+    def _init_ui(self):
+        """Initialize the settings dialog UI"""
+        layout = QVBoxLayout(self)
+        
+        # Create tab widget
+        self.tab_widget = QTabWidget()
+        
+        # Add tabs with scroll areas
+        general_tab = self._create_general_tab()
+        defaults_tab = self._create_defaults_tab()
+        
+        # Wrap each tab in a scroll area
+        general_scroll = QScrollArea()
+        general_scroll.setWidget(general_tab)
+        general_scroll.setWidgetResizable(True)
+        general_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        
+        defaults_scroll = QScrollArea()
+        defaults_scroll.setWidget(defaults_tab)
+        defaults_scroll.setWidgetResizable(True)
+        defaults_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        
+        self.tab_widget.addTab(general_scroll, "General")
+        self.tab_widget.addTab(defaults_scroll, "Defaults")
+        
+        layout.addWidget(self.tab_widget)
+        
+        # Buttons using QDialogButtonBox for platform-specific ordering
+        self.button_box = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+        )
+        self.button_box.accepted.connect(self.accept)
+        self.button_box.rejected.connect(self.reject)
+
+        layout.addWidget(self.button_box)
+        
+    def _create_defaults_tab(self):
+        """Create the defaults settings tab"""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        # View defaults group
+        view_group = QGroupBox("View Defaults")
+        view_layout = QFormLayout(view_group)
+        
+        self.default_show_masks_cb = QCheckBox()
+        view_layout.addRow("Show Masks by Default:", self.default_show_masks_cb)
+        
+        self.default_show_outlines_cb = QCheckBox()
+        view_layout.addRow("Show Outlines by Default:", self.default_show_outlines_cb)
+        
+        self.default_antialias_cb = QCheckBox()
+        view_layout.addRow("Antialias by Default:", self.default_antialias_cb)
+
+        self.default_color_picker = ColorPickerWidget()
+        view_layout.addRow("Default Background Color:", self.default_color_picker)
+        
+        layout.addWidget(view_group)
+        
+        # Segmentation Processing defaults group
+        proc_group = QGroupBox("Segmentation Defaults")
+        proc_layout = QFormLayout(proc_group)
+
+        self.default_holes_spin = QSpinBox()
+        self.default_holes_spin.setRange(0, 50)
+        proc_layout.addRow("Default Remove Holes:", self.default_holes_spin)
+        
+        self.default_dots_spin = QSpinBox()
+        self.default_dots_spin.setRange(0, 50)
+        proc_layout.addRow("Default Remove Dots:", self.default_dots_spin)
+        
+        self.default_border_spin = QSpinBox()
+        self.default_border_spin.setRange(0, 10)
+        proc_layout.addRow("Default Border Fix:", self.default_border_spin)
+        
+        self.default_grow_spin = QSpinBox()
+        self.default_grow_spin.setRange(-20, 20)
+        proc_layout.addRow("Default Shrink/Grow:", self.default_grow_spin)
+        
+        layout.addWidget(proc_group)
+        
+        # Matting defaults group
+        mat_group = QGroupBox("Matting Defaults")
+        mat_layout = QFormLayout(mat_group)
+
+        # Matting model selection
+        self.default_matting_model_combo = QComboBox()
+        self.default_matting_model_combo.addItems(["MatAnyone", "MatAnyone2", "VideoMaMa", "LTX Alpha"])
+        self.default_matting_model_combo.setToolTip("VideoMaMa is higher quality but slower and uses more VRAM.")
+        mat_layout.addRow("Matting Model:", self.default_matting_model_combo)
+
+        # Matting Internal Resolution selection
+        self.default_matany_res_combo = QComboBox()
+        self.default_matany_res_combo.addItems(["352", "480", "576", "720", "1080", "1440", "2160", "Full"])
+        mat_layout.addRow("Matting Internal Resolution:", self.default_matany_res_combo)
+
+        # VideoMaMa overlap size
+        self.default_matany_overlap_combo = QComboBox()
+        self.default_matany_overlap_combo.addItems(["0", "2", "4"])
+        self.default_matany_overlap_combo.setToolTip(
+            "Number of overlapping frames between batches (VideoMaMa only)."
+        )
+        mat_layout.addRow("Overlap Frames:", self.default_matany_overlap_combo)
+
+        # VideoMaMa chunk size
+        self.default_matany_chunk_combo = QComboBox()
+        self.default_matany_chunk_combo.addItems(["16", "32", "64", "128", "256", "512"])
+        self.default_matany_chunk_combo.setToolTip("Number of frames per batch (VideoMaMa only).")
+        mat_layout.addRow("Frames per batch:", self.default_matany_chunk_combo)
+
+        # LTX Alpha defaults
+        self.default_ltx_res_combo = QComboBox()
+        self.default_ltx_res_combo.addItems(["576", "736", "1088", "Full"])
+        self.default_ltx_res_combo.setToolTip("LTX Alpha only. 1088 and Full may run out of memory.")
+        mat_layout.addRow("LTX Resolution:", self.default_ltx_res_combo)
+
+        self.default_ltx_chunk_combo = QComboBox()
+        self.default_ltx_chunk_combo.addItems(["49", "97", "121", "145"])
+        self.default_ltx_chunk_combo.setToolTip("Number of frames per batch (LTX Alpha only).")
+        mat_layout.addRow("LTX Frames per batch:", self.default_ltx_chunk_combo)
+
+        self.default_ltx_overlap_combo = QComboBox()
+        self.default_ltx_overlap_combo.addItems(["2", "4", "8", "16"])
+        self.default_ltx_overlap_combo.setToolTip("Crossfade frames between batches (LTX Alpha only).")
+        mat_layout.addRow("LTX Overlap Frames:", self.default_ltx_overlap_combo)
+
+        # Matting Combined Mask
+        self.default_combined_mask_checkbox = QCheckBox()
+        self.default_combined_mask_checkbox.setToolTip("If checked, all objects will be merged and processed as a single object.")
+        mat_layout.addRow("Combine All Objects", self.default_combined_mask_checkbox)
+
+        self.default_matany_gamma_spin = QDoubleSpinBox()
+        self.default_matany_gamma_spin.setRange(0.1, 10.0)
+        self.default_matany_gamma_spin.setSingleStep(0.1)
+        self.default_matany_gamma_spin.setDecimals(1)
+        mat_layout.addRow("Default Gamma:", self.default_matany_gamma_spin)
+        
+        self.default_matany_grow_spin = QSpinBox()
+        self.default_matany_grow_spin.setRange(-20, 20)
+        mat_layout.addRow("Default Shrink/Grow:", self.default_matany_grow_spin)
+        
+        layout.addWidget(mat_group)
+
+        # Object Removal defaults group
+        removal_group = QGroupBox("Object Removal Defaults")
+        removal_layout = QFormLayout(removal_group)
+        
+        self.default_removal_method_combo = QComboBox()
+        self.default_removal_method_combo.addItems(["MiniMax-Remover", "OpenCV"])
+        removal_layout.addRow("Method:", self.default_removal_method_combo)
+        
+        self.default_inpaint_grow_spin = QSpinBox()
+        self.default_inpaint_grow_spin.setRange(-20, 20)
+        removal_layout.addRow("Default Shrink/Grow:", self.default_inpaint_grow_spin)
+        
+        layout.addWidget(removal_group)
+        
+        # OpenCV Removal defaults group
+        opencv_group = QGroupBox("OpenCV Removal Defaults")
+        opencv_layout = QFormLayout(opencv_group)
+        
+        self.default_opencv_algorithm_combo = QComboBox()
+        self.default_opencv_algorithm_combo.addItems(["Telea", "Navier Strokes"])
+        opencv_layout.addRow("Algorithm:", self.default_opencv_algorithm_combo)
+        
+        self.default_opencv_radius_spin = QSpinBox()
+        self.default_opencv_radius_spin.setRange(1, 10)
+        opencv_layout.addRow("Default Inpaint Radius:", self.default_opencv_radius_spin)
+        
+        layout.addWidget(opencv_group)
+        
+        # Minimax-Remover defaults group
+        minimax_group = QGroupBox("MiniMax-Remover Defaults")
+        minimax_layout = QFormLayout(minimax_group)
+        
+        self.default_minimax_res_combo = QComboBox()
+        self.default_minimax_res_combo.addItems(["352", "480", "720", "1080"])
+        minimax_layout.addRow("Internal Resolution:", self.default_minimax_res_combo)
+        
+        self.default_minimax_vae_tiling_cb = QCheckBox()
+        minimax_layout.addRow("Use VAE Tiling:", self.default_minimax_vae_tiling_cb)
+        
+        self.default_minimax_steps_spin = QSpinBox()
+        self.default_minimax_steps_spin.setRange(4, 12)
+        minimax_layout.addRow("Default Steps:", self.default_minimax_steps_spin)
+        
+        layout.addWidget(minimax_group)
+        
+        return tab
+    
+    def _create_general_tab(self):
+        """Create the general settings tab"""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        
+        # Model settings group
+        device_group = QGroupBox("Hardware Settings")
+        device_layout = QFormLayout(device_group)
+        
+        # Force CPU checkbox
+        self.force_cpu_cb = QCheckBox()
+        self.force_cpu_cb.setToolTip("Force processing to use CPU instead of GPU. Only used for debugging purposes.")
+        device_layout.addRow("Force CPU Processing (requires restart):", self.force_cpu_cb)
+        
+        layout.addWidget(device_group)
+        
+        # Frame extraction settings group
+        frame_group = QGroupBox("Video frame extraction")
+        frame_layout = QFormLayout(frame_group)
+        self.frame_format_combo = QComboBox()
+        self.frame_format_combo.addItems(["png", "jpg"])
+        self.frame_format_combo.setToolTip("PNG is lossless but requires more storage space and is slower than JPG")
+        frame_layout.addRow("File Type:", self.frame_format_combo)
+        
+        layout.addWidget(frame_group)
+        
+        # Display settings group
+        display_group = QGroupBox("Display Settings")
+        display_layout = QFormLayout(display_group)
+        
+        # Display update frequency slider
+        self.display_update_slider = QSlider(Qt.Horizontal)
+        self.display_update_slider.setRange(1, 10)
+        self.display_update_slider.setValue(5)  # Default value
+        self.display_update_slider.setToolTip("How often to update the display during tracking or matting.\nLower values are more responsive but slightly slower.")
+        self.display_update_slider.setTickPosition(QSlider.TicksBelow)
+        self.display_update_slider.setTickInterval(1)
+        
+        # Create a layout with slider and value label
+        slider_layout = QHBoxLayout()
+        slider_layout.addWidget(self.display_update_slider)
+        self.display_update_label = QLabel("5")
+        self.display_update_label.setFixedWidth(20)
+        slider_layout.addWidget(self.display_update_label)
+        
+        # Update label when slider changes
+        self.display_update_slider.valueChanged.connect(
+            lambda v: self.display_update_label.setText(str(v))
+        )
+        
+        display_layout.addRow("Display Update Frequency:", slider_layout)
+        layout.addWidget(display_group)
+        
+        # Deduplication threshold settings group
+        deduplication_group = QGroupBox("Deduplication Threshold")
+        deduplication_layout = QFormLayout(deduplication_group)
+        
+        self.deduplication_threshold_spin = QDoubleSpinBox()
+        self.deduplication_threshold_spin.setRange(0,1)
+        self.deduplication_threshold_spin.setValue(0.8)
+        self.deduplication_threshold_spin.setSingleStep(0.01)
+        self.deduplication_threshold_spin.setToolTip("Value from 0 to 1 used as a threshold for how similar masks have to be before they're considered the same and deduped.\nHigher values are more strict.")
+        deduplication_layout.addRow("Threshold:", self.deduplication_threshold_spin)
+        
+        layout.addWidget(deduplication_group)
+
+        return tab
+    
+    def _load_current_values(self):
+        """Load current settings values into the dialog"""
+        app_settings = self.settings_mgr.app_settings
+        
+        # Defaults tab
+        #self.default_sam_model_combo.setCurrentText(app_settings.default_sam_model)
+        self.default_show_masks_cb.setChecked(app_settings.default_show_masks)
+        self.default_show_outlines_cb.setChecked(app_settings.default_show_outlines)
+        self.default_antialias_cb.setChecked(app_settings.default_antialias)
+        self.default_color_picker.set_color(app_settings.default_bgcolor)
+        
+        self.default_holes_spin.setValue(app_settings.default_holes)
+        self.default_dots_spin.setValue(app_settings.default_dots)
+        self.default_border_spin.setValue(app_settings.default_border_fix)
+        self.default_grow_spin.setValue(app_settings.default_grow)
+        
+        self.default_matany_gamma_spin.setValue(app_settings.default_matany_gamma)
+        self.default_matany_grow_spin.setValue(app_settings.default_matany_grow)
+        self.default_matting_model_combo.setCurrentText(app_settings.default_matany_model)
+        self.default_combined_mask_checkbox.setChecked(app_settings.default_matany_combined)
+        self.default_matany_overlap_combo.setCurrentText(str(app_settings.default_matany_overlap))
+        self.default_matany_chunk_combo.setCurrentText(str(app_settings.default_matany_chunk))
+        self.default_ltx_res_combo.setCurrentText(
+            "Full" if app_settings.default_ltx_res == 0 else str(app_settings.default_ltx_res)
+        )
+        self.default_ltx_chunk_combo.setCurrentText(str(app_settings.default_ltx_chunk))
+        self.default_ltx_overlap_combo.setCurrentText(str(app_settings.default_ltx_overlap))
+
+        # Set MatAnyone resolution combo box
+        if app_settings.default_matany_res == 0:
+            self.default_matany_res_combo.setCurrentText("Full")
+        else:
+            self.default_matany_res_combo.setCurrentText(str(app_settings.default_matany_res))
+        
+        # Object Removal defaults
+        self.default_removal_method_combo.setCurrentText(app_settings.default_removal_method)
+        self.default_inpaint_grow_spin.setValue(app_settings.default_inpaint_grow)
+        
+        # OpenCV Removal defaults
+        self.default_opencv_algorithm_combo.setCurrentText(app_settings.default_inpaint_method)
+        self.default_opencv_radius_spin.setValue(app_settings.default_inpaint_radius)
+        
+        # Minimax-Remover defaults
+        self.default_minimax_res_combo.setCurrentText(str(app_settings.default_minimax_resolution))
+        self.default_minimax_vae_tiling_cb.setChecked(app_settings.default_minimax_vae_tiling)
+        self.default_minimax_steps_spin.setValue(app_settings.default_minimax_steps)
+
+        # General tab
+        self.force_cpu_cb.setChecked(app_settings.force_cpu)
+        self.frame_format_combo.setCurrentText(app_settings.frame_format)
+        self.display_update_slider.setValue(app_settings.display_update_frequency)
+        self.display_update_label.setText(str(app_settings.display_update_frequency))
+        self.deduplication_threshold_spin.setValue(app_settings.dedupe_threshold)
+    
+    
+    def _save_current_values(self):
+        """Save dialog values back to settings"""
+        app_settings = self.settings_mgr.app_settings
+        
+        # Defaults tab
+        #app_settings.default_sam_model = self.default_sam_model_combo.currentText()
+        app_settings.default_show_masks = self.default_show_masks_cb.isChecked()
+        app_settings.default_show_outlines = self.default_show_outlines_cb.isChecked()
+        app_settings.default_antialias = self.default_antialias_cb.isChecked()
+        app_settings.default_bgcolor = self.default_color_picker.color_rgb
+        app_settings.default_holes = self.default_holes_spin.value()
+        app_settings.default_dots = self.default_dots_spin.value()
+        app_settings.default_border_fix = self.default_border_spin.value()
+        app_settings.default_grow = self.default_grow_spin.value()
+        app_settings.default_matany_gamma = self.default_matany_gamma_spin.value()
+        app_settings.default_matany_grow = self.default_matany_grow_spin.value()
+        app_settings.default_matany_model = self.default_matting_model_combo.currentText()
+        app_settings.default_matany_combined = self.default_combined_mask_checkbox.isChecked()
+        app_settings.default_matany_overlap = int(self.default_matany_overlap_combo.currentText())
+        app_settings.default_matany_chunk = int(self.default_matany_chunk_combo.currentText())
+        ltx_res_text = self.default_ltx_res_combo.currentText()
+        app_settings.default_ltx_res = 0 if ltx_res_text == "Full" else int(ltx_res_text)
+        app_settings.default_ltx_chunk = int(self.default_ltx_chunk_combo.currentText())
+        app_settings.default_ltx_overlap = int(self.default_ltx_overlap_combo.currentText())
+
+        # Handle MatAnyone resolution setting
+        matany_text = self.default_matany_res_combo.currentText()
+        if matany_text == "Full":
+            app_settings.default_matany_res = 0
+        else:
+            app_settings.default_matany_res = int(matany_text)
+        
+        # Object Removal defaults
+        app_settings.default_removal_method = self.default_removal_method_combo.currentText()
+        app_settings.default_inpaint_grow = self.default_inpaint_grow_spin.value()
+        
+        # OpenCV Removal defaults
+        app_settings.default_inpaint_method = self.default_opencv_algorithm_combo.currentText()
+        app_settings.default_inpaint_radius = self.default_opencv_radius_spin.value()
+        
+        # Minimax-Remover defaults
+        app_settings.default_minimax_resolution = int(self.default_minimax_res_combo.currentText())
+        app_settings.default_minimax_vae_tiling = self.default_minimax_vae_tiling_cb.isChecked()
+        app_settings.default_minimax_steps = self.default_minimax_steps_spin.value()
+
+        # General tab
+        app_settings.force_cpu = self.force_cpu_cb.isChecked()
+        app_settings.frame_format = self.frame_format_combo.currentText()
+        app_settings.display_update_frequency = self.display_update_slider.value()
+        app_settings.dedupe_threshold = self.deduplication_threshold_spin.value()
+            
+    
+    def accept(self):
+        """Apply settings and close dialog"""
+        # Check what changed before saving
+        old_settings = self._original_app_settings
+        self._save_current_values()
+        new_settings = self.settings_mgr.app_settings
+        
+        # Check for changes that require refreshing
+        self._handle_setting_changes(old_settings, new_settings)
+        
+        self.settings_mgr.save_app_settings()
+        super().accept()
+    
+    def _handle_setting_changes(self, old_settings, new_settings):
+        """Handle changes that require special actions"""
+        # Check for splitter size changes
+        splitter_changed = (
+            old_settings.main_splitter_sizes != new_settings.main_splitter_sizes or
+            old_settings.vertical_splitter_sizes != new_settings.vertical_splitter_sizes or
+            old_settings.bottom_splitter_sizes != new_settings.bottom_splitter_sizes
+        )
+        
+        # Notify parent window if it exists
+        if hasattr(self, 'parent') and self.parent():
+            if splitter_changed:
+                # Call method to refresh splitter sizes
+                if hasattr(self.parent(), '_refresh_splitter_sizes'):
+                    self.parent()._refresh_splitter_sizes()
+
+    
+    def reject(self):
+        """Cancel changes and close dialog"""
+        self._restore_app_settings()
+        super().reject()

@@ -1,0 +1,31 @@
+# Python environments (portable build and source install)
+python_env/
+venv/
+python-3.12.8-embed-amd64/
+__pycache__/
+*.pyc
+
+# Models: never committed, see README.md "Models"
+checkpoints/
+LTX_MODELS/
+*.safetensors
+*.pth
+*.pt
+*.part
+
+# LTX-2 code: separately licensed, installed by install_dependencies.sh
+ltx_core/
+ltx_pipelines/
+
+# Runtime and per-user state
+temp/
+sammie_settings.conf
+*.log
+
+# Portable-build files
+SHA256SUMS
+DEPLOY_NOTES.txt
+*.tar
+
+# Hugging Face release staging (see hf_release/README.md)
+hf_release/
