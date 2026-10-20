@@ -212,6 +212,9 @@ class Sam3Manager(BaseSamManager):
                     input_points=[[input_points]],
                     input_labels=[[input_labels]],
                 )
+            # add_inputs_to_inference_session replaces obj_with_new_inputs with its own obj_ids,
+            # so with several objects on one frame only the last would be treated as new
+            self.inference_session.obj_with_new_inputs = list(frame_object_ids)
 
             try:
                 outputs = self.model(inference_session=self.inference_session, frame_idx=frame_number)
