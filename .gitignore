@@ -32,3 +32,7 @@ hf_release/
 
 # Windows wheel downloads (build step for the air-gapped Windows package)
 win_wheels/
+
+# Portable macOS build: Python and its downloaded wheels
+python_mac/
+mac_build/

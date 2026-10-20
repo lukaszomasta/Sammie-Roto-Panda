@@ -27,6 +27,9 @@ LORA = "ltx-2.5-22b-ic-lora-alpha-gen-0.9.safetensors"
 # Built once by tools/build_ltx_fp8_fused.py: the transformer with LORA fused in, stored
 # fp8. Preferred when present; otherwise TRANSFORMER + LORA are fused at load time.
 FUSED_FP8 = "ltx-2.5-22b-distilled-alpha-gen-0.9-fp8-fused.safetensors"
+# The same weights expanded to bf16 (tools/build_ltx_bf16_fused.py, exact) for GPUs without
+# fp8 support such as Apple Silicon; preferred there over TRANSFORMER + LORA.
+FUSED_BF16 = "ltx-2.5-22b-distilled-alpha-gen-0.9-bf16-fused.safetensors"
 EMBED_CACHE = "empty_prompt_embeddings.safetensors"
 LEGACY_EMBED_CACHE = "empty_prompt_embeddings.pt"  # older builds; loaded with weights_only
 COMMON_FILES = (VIDEO_VAE, AUDIO_VAE, EMBED_CACHE)
@@ -37,14 +40,14 @@ _FULL_GPU_VRAM = 30 * 2**30
 _RAM_HEADROOM = 16 * 2**30
 
 
-def has_fused(models_dir=LTX_DIR):
-    return os.path.exists(os.path.join(models_dir, FUSED_FP8))
+def has_fused(models_dir=LTX_DIR, fp8=True):
+    return os.path.exists(os.path.join(models_dir, FUSED_FP8 if fp8 else FUSED_BF16))
 
 
 def fp8_supported(device):
     """fp8 weights are upcast per layer on the GPU; only verified on NVIDIA (CUDA).
 
-    Elsewhere (Apple MPS, Intel XPU) the bf16 transformer + LoRA are used instead.
+    Elsewhere (Apple MPS, Intel XPU) the bf16 fused build, or bf16 transformer + LoRA, is used.
     """
     return torch.device(device).type == "cuda"
 
@@ -64,19 +67,18 @@ def embed_cache_path(models_dir=LTX_DIR):
 
 
 def missing_files(models_dir=LTX_DIR, fp8=True):
-    """Files still needed; with fp8=False (non-NVIDIA GPUs) the fp8 build can't be used."""
-    use_fused = fp8 and has_fused(models_dir)
-    needed = COMMON_FILES + ((FUSED_FP8,) if use_fused else (TRANSFORMER, LORA))
+    """Files still needed; with fp8=False (non-NVIDIA GPUs) the bf16 fused build is used."""
+    fused = FUSED_FP8 if fp8 else FUSED_BF16
+    needed = COMMON_FILES + ((fused,) if has_fused(models_dir, fp8) else (TRANSFORMER, LORA))
     missing = [f for f in needed if not os.path.exists(os.path.join(models_dir, f))]
     if EMBED_CACHE in missing and os.path.exists(embed_cache_path(models_dir)):
         missing.remove(EMBED_CACHE)
     if TRANSFORMER in missing:
-        if fp8:
-            missing[missing.index(TRANSFORMER)] = f"{FUSED_FP8} (or {TRANSFORMER} + {LORA})"
-        elif has_fused(models_dir):
-            missing[missing.index(TRANSFORMER)] = (
-                f"{TRANSFORMER} (the fp8 build {FUSED_FP8} needs an NVIDIA GPU)"
-            )
+        hint = "" if fp8 or not has_fused(models_dir) else (
+            f"; make it from {FUSED_FP8} with tools/build_ltx_bf16_fused.py")
+        missing[missing.index(TRANSFORMER)] = f"{fused} (or {TRANSFORMER} + {LORA}){hint}"
+        if LORA in missing:
+            missing.remove(LORA)
     return missing
 
 
@@ -197,9 +199,9 @@ class LTXAlphaPipeline:
         self.video_vae_path = path(VIDEO_VAE)
 
         fp8 = fp8_supported(self.device)
-        self.fused = fp8 and has_fused(models_dir)
+        self.fused = has_fused(models_dir, fp8)
         if self.fused:
-            transformer, loras = path(FUSED_FP8), []
+            transformer, loras = path(FUSED_FP8 if fp8 else FUSED_BF16), []
         else:
             transformer = path(TRANSFORMER)
             loras = [LoraPathStrengthAndSDOps(path(LORA), 1.0, LTXV_LORA_COMFY_RENAMING_MAP)]

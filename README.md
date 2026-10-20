@@ -24,10 +24,10 @@ Tested on Rocky Linux with NVIDIA GPUs (RTX 4060 8 GB and RTX 5000 32 GB, CUDA 1
 | | Linux + NVIDIA | Windows + NVIDIA | macOS (Apple Silicon) |
 |---|---|---|---|
 | Upstream features, SAM3 | tested | as upstream | as upstream |
-| ViTMatte, MEMatte | tested | needs detectron2 built with Visual Studio C++ Build Tools | needs detectron2 (Xcode command line tools) |
+| ViTMatte, MEMatte | tested | needs detectron2 (see below) | needs detectron2 (see below) |
 | LTX Alpha | tested (8 GB and 32 GB GPUs) | expected to work like Linux; not tested | bf16 transformer + LoRA only (no fp8); needs 64 GB+ unified memory; not tested |
 
-Without detectron2 Sammie still starts; only ViTMatte and MEMatte are unavailable.
+Without detectron2 Sammie still starts; only ViTMatte and MEMatte are unavailable. ViTMatte and MEMatte use only detectron2's Python code, not its compiled C++ extension, so if the build fails (Windows needs Visual Studio, macOS the Xcode command line tools), copying the `detectron2` folder of the [pinned commit](https://github.com/facebookresearch/detectron2/tree/02b5c4e295e990042a714712c21dc79b731e8833) into `site-packages` and running `pip install fvcore iopath pycocotools` is enough.
 
 ## Installation
 
