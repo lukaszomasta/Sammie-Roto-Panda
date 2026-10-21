@@ -1,4 +1,4 @@
-# Sammie-Roto 2 — panda fork (2.3.3+panda.2)
+# Sammie-Roto 2 — panda fork (2.3.3+panda.2.1)
 
 A personal fork of [Sammie-Roto 2](https://github.com/Zarxrax/Sammie-Roto-2) by Zarxrax, based on version **2.3.3**. It adds segmentation and matting models to the original app. Everything else works as upstream: see the original README below.
 
@@ -8,16 +8,18 @@ Tested on Rocky Linux with NVIDIA GPUs (RTX 4060 8 GB and RTX 5000 32 GB, CUDA 1
 
 ## What's new
 
-**2.3.3+panda.2**
-- **LTX Alpha matting.** A new matting model built on Lightricks' [LTX-2.5 IC-LoRA Alpha-Gen](https://huggingface.co/Lightricks/LTX-2.5-22b-IC-LoRA-Alpha-Gen). Sammie grows and feathers the SAM mask, premultiplies the frame onto black, and the model mattes what remains. The Matting tab has resolution (576 / 736 / 1088 / Full), batch size (49 / 97 / 121 / 145 frames) and crossfade overlap (2 / 4 / 8 / 16 frames) options, like VideoMaMa.
-- Runs fully offline: the empty text prompt is pre-encoded once, so the 24 GiB Gemma text encoder is never loaded at runtime.
-- Optional fp8 build of the transformer with the LoRA fused in (21.9 GiB instead of 39.1 + 1.2 GiB; a two-batch test ran 2.7× faster).
-- Fixed: a fresh install crashed on startup with `Unrecognized SAM2 model name: 'Base'`.
+**2.3.3+panda.2.1**
 - Windows and macOS: `install_dependencies.bat` works from a git clone (venv) and `run_sammie.bat` was added; detectron2 is optional, so Sammie starts without it; LTX Alpha uses bf16 on non-NVIDIA GPUs and disables float16 autocast, which can overflow this model.
 - Apple Silicon: LTX Alpha uses a bf16 copy of the fused transformer, made from the fp8 file with `tools/build_ltx_bf16_fused.py` (exact; the mattes are bit-identical to fp8).
 - ViTMatte and MEMatte need only detectron2's Python code, not its C++ extension, so they also work where detectron2 can't be compiled.
 - Launchers call `python3.12` directly, so portable copies that lost their symlinks (for example on exFAT drives) still start.
 - Fixed: reopening a SAM3 session with several objects on one frame failed with `maskmem_features in conditioning outputs cannot be empty`, and tracking failed after it.
+
+**2.3.3+panda.2**
+- **LTX Alpha matting.** A new matting model built on Lightricks' [LTX-2.5 IC-LoRA Alpha-Gen](https://huggingface.co/Lightricks/LTX-2.5-22b-IC-LoRA-Alpha-Gen). Sammie grows and feathers the SAM mask, premultiplies the frame onto black, and the model mattes what remains. The Matting tab has resolution (576 / 736 / 1088 / Full), batch size (49 / 97 / 121 / 145 frames) and crossfade overlap (2 / 4 / 8 / 16 frames) options, like VideoMaMa.
+- Runs fully offline: the empty text prompt is pre-encoded once, so the 24 GiB Gemma text encoder is never loaded at runtime.
+- Optional fp8 build of the transformer with the LoRA fused in (21.9 GiB instead of 39.1 + 1.2 GiB; a two-batch test ran 2.7× faster).
+- Fixed: a fresh install crashed on startup with `Unrecognized SAM2 model name: 'Base'`.
 
 **2.3.3+panda.1**
 - **SAM3** segmentation model.

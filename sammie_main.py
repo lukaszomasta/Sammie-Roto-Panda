@@ -38,7 +38,7 @@ from sammie.gui_widgets import (
 
 # ==================== VERSION ====================
 
-__version__ = "2.3.3+panda.2"
+__version__ = "2.3.3+panda.2.1"
 
 # ==================== LOGGING HELPER ====================
 
