@@ -4,7 +4,7 @@ A personal fork of [Sammie-Roto 2](https://github.com/Zarxrax/Sammie-Roto-2) by 
 
 > **Models are not included and mostly not downloaded for you.** Several of them are gated on Hugging Face, so you need to accept their licenses and download them yourself. The [Models](#models) section lists every file and where it goes.
 
-Tested on Rocky Linux with NVIDIA GPUs (RTX 4060 8 GB and RTX 5000 32 GB, CUDA 13.0, PyTorch 2.10). The additions have not been tested on Windows or macOS.
+Tested on Rocky Linux with NVIDIA GPUs (RTX 4060 8 GB and RTX 5000 32 GB, CUDA 13.0, PyTorch 2.10), on Windows with an NVIDIA GPU, and on Apple Silicon Macs.
 
 ## What's new
 
@@ -14,6 +14,10 @@ Tested on Rocky Linux with NVIDIA GPUs (RTX 4060 8 GB and RTX 5000 32 GB, CUDA 1
 - Optional fp8 build of the transformer with the LoRA fused in (21.9 GiB instead of 39.1 + 1.2 GiB; a two-batch test ran 2.7× faster).
 - Fixed: a fresh install crashed on startup with `Unrecognized SAM2 model name: 'Base'`.
 - Windows and macOS: `install_dependencies.bat` works from a git clone (venv) and `run_sammie.bat` was added; detectron2 is optional, so Sammie starts without it; LTX Alpha uses bf16 on non-NVIDIA GPUs and disables float16 autocast, which can overflow this model.
+- Apple Silicon: LTX Alpha uses a bf16 copy of the fused transformer, made from the fp8 file with `tools/build_ltx_bf16_fused.py` (exact; the mattes are bit-identical to fp8).
+- ViTMatte and MEMatte need only detectron2's Python code, not its C++ extension, so they also work where detectron2 can't be compiled.
+- Launchers call `python3.12` directly, so portable copies that lost their symlinks (for example on exFAT drives) still start.
+- Fixed: reopening a SAM3 session with several objects on one frame failed with `maskmem_features in conditioning outputs cannot be empty`, and tracking failed after it.
 
 **2.3.3+panda.1**
 - **SAM3** segmentation model.
@@ -23,9 +27,9 @@ Tested on Rocky Linux with NVIDIA GPUs (RTX 4060 8 GB and RTX 5000 32 GB, CUDA 1
 
 | | Linux + NVIDIA | Windows + NVIDIA | macOS (Apple Silicon) |
 |---|---|---|---|
-| Upstream features, SAM3 | tested | as upstream | as upstream |
-| ViTMatte, MEMatte | tested | needs detectron2 (see below) | needs detectron2 (see below) |
-| LTX Alpha | tested (8 GB and 32 GB GPUs) | expected to work like Linux; not tested | bf16 transformer + LoRA only (no fp8); needs 64 GB+ unified memory; not tested |
+| Upstream features, SAM3 | tested | tested | tested |
+| ViTMatte, MEMatte | tested | tested; needs detectron2 (see below) | needs detectron2 (see below) |
+| LTX Alpha | tested (8 GB and 32 GB GPUs) | tested | tested; bf16 only (no fp8); needs 64 GB+ unified memory |
 
 Without detectron2 Sammie still starts; only ViTMatte and MEMatte are unavailable. ViTMatte and MEMatte use only detectron2's Python code, not its compiled C++ extension, so if the build fails (Windows needs Visual Studio, macOS the Xcode command line tools), copying the `detectron2` folder of the [pinned commit](https://github.com/facebookresearch/detectron2/tree/02b5c4e295e990042a714712c21dc79b731e8833) into `site-packages` and running `pip install fvcore iopath pycocotools` is enough.
 
@@ -120,9 +124,13 @@ To build the files yourself instead:
 
 4. Put a copy of the [LTX-2.x Community License](https://github.com/Lightricks/LTX-2/blob/main/LICENSE-2_x) next to the weights.
 
-When everything is in place, `checkpoints/ltx_alpha/` holds the video VAE, the audio VAE, `empty_prompt_embeddings.safetensors`, and either the fp8 fused transformer or the bf16 transformer + LoRA. If something is missing, Sammie lists exactly what when you load the model.
+When everything is in place, `checkpoints/ltx_alpha/` holds the video VAE, the audio VAE, `empty_prompt_embeddings.safetensors`, and either the fp8 fused transformer (NVIDIA), the bf16 fused transformer (other GPUs), or the bf16 transformer + LoRA. If something is missing, Sammie lists exactly what when you load the model.
 
-**Apple Silicon.** The fp8 build needs an NVIDIA GPU, so on a Mac use the bf16 transformer + LoRA (skip step 3, or keep them after it). The model then lives in unified memory: plan on 64 GB or more. This setup has not been tested.
+**Apple Silicon.** Apple GPUs have no fp8, so a Mac needs a bf16 transformer. The faster option is the bf16 fused file: get the fp8 fused file (step 3, or the prebuilt shortcut above) and expand it, which needs no GPU and little RAM:
+```bash
+venv/bin/python tools/build_ltx_bf16_fused.py
+```
+This writes `checkpoints/ltx_alpha/ltx-2.5-22b-distilled-alpha-gen-0.9-bf16-fused.safetensors` (39.1 GiB), and you can then delete the fp8 file on the Mac. The expansion is exact: the mattes are bit-identical to the fp8 build. Without it, Sammie falls back to the bf16 transformer + LoRA. The model lives in unified memory, so plan on 64 GB or more.
 
 **Hardware.** GPUs with 30 GiB of VRAM or more keep the whole model on the GPU. Smaller GPUs stream the transformer from system RAM. An 8 GB RTX 4060 with 62 GB RAM runs a 992×576 crop in batches of 49 frames (about 2.5 minutes per batch, 5.1 GiB VRAM peak). Resolutions of 1088 and above may run out of memory.
 
