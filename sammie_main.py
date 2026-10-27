@@ -38,7 +38,10 @@ from sammie.gui_widgets import (
 
 # ==================== VERSION ====================
 
-__version__ = "2.3.3+panda.2.1"
+__version__ = "2.3.3+panda.3.0"
+
+# Views (and export types) that need CorridorKey's foreground colour
+CORRIDORKEY_VIEWS = ("CorridorKey-FG", "CorridorKey-Despill")
 
 # ==================== LOGGING HELPER ====================
 
@@ -372,6 +375,18 @@ class SegmentationTab(QWidget):
             slider.setValue(value)
             value_label.setText(str(value))
 
+class ObjectComboBox(QComboBox):
+    """Object dropdown that rebuilds its list from the current points each time it opens."""
+
+    def __init__(self, tab):
+        super().__init__()
+        self._tab = tab
+
+    def showPopup(self):
+        self._tab.refresh_object_combo()
+        super().showPopup()
+
+
 class MattingTab(QWidget):
     """Tab containing matting controls and parameters"""
     
@@ -418,10 +433,12 @@ class MattingTab(QWidget):
                 "MEMatte Robust",
                 "VideoMaMa",
                 "LTX Alpha",
+                "CorridorKey",
             ])
         self.matany_model_combo.setToolTip(
             "VideoMaMa is higher quality but slower and uses more VRAM.\n"
-            "LTX Alpha (LTX-2.5 Alpha-Gen) gives the finest edges but is the slowest and needs ~32 GB VRAM."
+            "LTX Alpha (LTX-2.5 Alpha-Gen) gives the finest edges but is the slowest and needs ~32 GB VRAM.\n"
+            "CorridorKey (2.0) is built for green/blue screen; it also predicts the clean foreground colour."
         )
 
         self.res_label = res_label = QLabel("Internal Resolution:")
@@ -454,15 +471,15 @@ class MattingTab(QWidget):
         )
         self.ltx_chunk_label = QLabel("Frames per batch:")
         self.ltx_chunk_combo = QComboBox()
-        self.ltx_chunk_combo.addItems(["49", "97", "121", "145"])
+        self.ltx_chunk_combo.addItems(["25", "49", "97", "121", "145"])
         self.ltx_chunk_combo.setToolTip(
             "Frames processed at once. Larger batches are more temporally stable but need more VRAM.\n"
-            "145 is the model's maximum."
+            "Batches must be 8n+1 frames; 25 suits short shots. 145 is the model's maximum."
         )
         self.ltx_overlap_label = QLabel("Crossfade overlap frames:")
         self.ltx_overlap_combo = QComboBox()
-        self.ltx_overlap_combo.addItems(["2", "4", "8", "16"])
-        self.ltx_overlap_combo.setToolTip("Frames shared and crossfaded between consecutive batches.")
+        self.ltx_overlap_combo.addItems(["0", "2", "4", "8", "16"])
+        self.ltx_overlap_combo.setToolTip("Frames shared and crossfaded between consecutive batches.\n0 = no blending (hard cut between batches).")
         self._ltx_widgets = (
             self.ltx_res_label, self.ltx_res_combo, self.ltx_chunk_label,
             self.ltx_chunk_combo, self.ltx_overlap_label, self.ltx_overlap_combo,
@@ -470,8 +487,48 @@ class MattingTab(QWidget):
         for widget in self._ltx_widgets:
             widget.setVisible(False)
 
+        # CorridorKey settings (only shown for CorridorKey)
+        self.ck_hint_label = QLabel("Hint trust:")
+        self.ck_hint_combo = QComboBox()
+        self.ck_hint_combo.addItems(["0.95", "0.75", "0.50"])
+        self.ck_hint_combo.setToolTip(
+            "How much CorridorKey trusts the tracked masks it is given as a hint.\n"
+            "0.95: clean, accurate masks. 0.75: rough automated masks (default). 0.50: loose masks."
+        )
+        self.ck_chunk_label = QLabel("Window frames:")
+        self.ck_chunk_combo = QComboBox()
+        self.ck_chunk_combo.addItems(["Auto", "8", "24", "48", "80"])
+        self.ck_chunk_combo.setToolTip(
+            "Frames analysed together. Larger windows are more temporally stable but need more VRAM.\n"
+            "Auto picks the largest window that fits in free VRAM."
+        )
+        self.ck_despill_label = QLabel("Despill:")
+        self.ck_despill_combo = QComboBox()
+        self.ck_despill_combo.addItems(["0", "0.25", "0.5", "0.75", "1.0"])
+        self.ck_despill_combo.setToolTip(
+            "Green spill removal for the CorridorKey-Despill views and exports.\n"
+            "Applied when viewing or exporting, so it can be changed after matting."
+        )
+        self.ck_carry_checkbox = QCheckBox("Carry matte between windows")
+        self.ck_carry_checkbox.setToolTip(
+            "Feed CorridorKey's own matte forward as the hint where windows overlap.\n"
+            "Turn off to follow the tracked masks literally on every frame."
+        )
+        self._ck_widgets = (
+            self.ck_hint_label, self.ck_hint_combo, self.ck_chunk_label, self.ck_chunk_combo,
+            self.ck_despill_label, self.ck_despill_combo, self.ck_carry_checkbox,
+        )
+        for widget in self._ck_widgets:
+            widget.setVisible(False)
+
         self.combined_mask_checkbox = QCheckBox("Combine All Objects")
         self.combined_mask_checkbox.setToolTip("If checked, all objects will be merged and processed as a single object.")
+        self.matting_object_combo = ObjectComboBox(self)
+        self.matting_object_combo.setToolTip(
+            "Object to matte. 'All Objects' mattes every object separately.\n"
+            "Mattes of the other objects are kept, so objects can be processed one by one.\n"
+            "Ignored when 'Combine All Objects' is checked."
+        )
 
         # Connect to save settings when changed
         self.matany_model_combo.currentTextChanged.connect(self._save_model_setting)
@@ -485,6 +542,8 @@ class MattingTab(QWidget):
         self.combined_mask_checkbox.stateChanged.connect(
             lambda state: settings_mgr.set_session_setting("matany_combined", self.combined_mask_checkbox.isChecked())
         )
+        self.combined_mask_checkbox.toggled.connect(lambda checked: self.matting_object_combo.setEnabled(not checked))
+        self.matting_object_combo.currentIndexChanged.connect(self._save_matting_object)
         self.ltx_res_combo.currentTextChanged.connect(
             lambda v: settings_mgr.set_session_setting("ltx_res", 0 if v == "Full" else int(v))
         )
@@ -493,6 +552,18 @@ class MattingTab(QWidget):
         )
         self.ltx_overlap_combo.currentTextChanged.connect(
             lambda v: settings_mgr.set_session_setting("ltx_overlap", int(v))
+        )
+        self.ck_hint_combo.currentTextChanged.connect(
+            lambda v: settings_mgr.set_session_setting("ck_hint_quality", float(v))
+        )
+        self.ck_chunk_combo.currentTextChanged.connect(
+            lambda v: settings_mgr.set_session_setting("ck_chunk", 0 if v == "Auto" else int(v))
+        )
+        self.ck_despill_combo.currentTextChanged.connect(
+            lambda v: settings_mgr.set_session_setting("ck_despill", float(v))
+        )
+        self.ck_carry_checkbox.toggled.connect(
+            lambda checked: settings_mgr.set_session_setting("ck_carry", checked)
         )
 
         model_layout.addWidget(model_label)
@@ -516,13 +587,21 @@ class MattingTab(QWidget):
             (self.ltx_res_label, self.ltx_res_combo),
             (self.ltx_chunk_label, self.ltx_chunk_combo),
             (self.ltx_overlap_label, self.ltx_overlap_combo),
+            (self.ck_hint_label, self.ck_hint_combo),
+            (self.ck_chunk_label, self.ck_chunk_combo),
+            (self.ck_despill_label, self.ck_despill_combo),
         ):
             row = QHBoxLayout()
             row.addWidget(label)
             row.addWidget(combo)
             row.addStretch()
             processing_layout.addLayout(row)
-        processing_layout.addWidget(self.combined_mask_checkbox)
+        processing_layout.addWidget(self.ck_carry_checkbox)
+        objects_row = QHBoxLayout()
+        objects_row.addWidget(self.combined_mask_checkbox)
+        objects_row.addWidget(self.matting_object_combo)
+        objects_row.addStretch()
+        processing_layout.addLayout(objects_row)
         layout.addWidget(processing_group)
 
         # Parameters
@@ -666,6 +745,8 @@ class MattingTab(QWidget):
             widget.setVisible(is_videomama)
         for widget in self._ltx_widgets:
             widget.setVisible(is_ltx)
+        for widget in self._ck_widgets:
+            widget.setVisible(model == "CorridorKey")
         self.res_label.setVisible(not is_ltx)
         self.matany_res_combo.setVisible(not is_ltx)
 
@@ -698,6 +779,14 @@ class MattingTab(QWidget):
         self.ltx_chunk_combo.setCurrentText(str(settings_mgr.get_session_setting("ltx_chunk", 97)))
         self.ltx_overlap_combo.setCurrentText(str(settings_mgr.get_session_setting("ltx_overlap", 8)))
 
+        # Load CorridorKey values
+        self.ck_hint_combo.setCurrentText(f'{settings_mgr.get_session_setting("ck_hint_quality", 0.75):.2f}')
+        ck_chunk = settings_mgr.get_session_setting("ck_chunk", 0)
+        self.ck_chunk_combo.setCurrentText("Auto" if ck_chunk == 0 else str(ck_chunk))
+        ck_despill = settings_mgr.get_session_setting("ck_despill", 0.5)
+        self.ck_despill_combo.setCurrentText("1.0" if ck_despill >= 1 else f"{ck_despill:g}")
+        self.ck_carry_checkbox.setChecked(settings_mgr.get_session_setting("ck_carry", True))
+
         # Load overlap value
         overlap = settings_mgr.get_session_setting("matany_overlap", 2)
         self.overlap_combo.setCurrentText(str(overlap))
@@ -719,6 +808,8 @@ class MattingTab(QWidget):
         # Load combined checkbox
         combined = settings_mgr.get_session_setting("matany_combined", False)
         self.combined_mask_checkbox.setChecked(combined)
+        self.matting_object_combo.setEnabled(not combined)
+        self.refresh_object_combo()
 
         # Update gamma slider
         gamma = settings_mgr.get_session_setting("matany_gamma", 1.0)
@@ -729,6 +820,31 @@ class MattingTab(QWidget):
         shrink_grow = settings_mgr.get_session_setting("matany_grow", 0)
         self.shrink_grow_slider.setValue(shrink_grow)
         self.shrink_grow_value.setText(str(shrink_grow))
+
+    def _save_matting_object(self, index):
+        if self.matting_object_combo.signalsBlocked() or index < 0:
+            return
+        get_settings_manager().set_session_setting("matany_object", self.matting_object_combo.itemData(index))
+
+    def refresh_object_combo(self):
+        """Repopulate the object dropdown from the current points, keeping the saved choice."""
+        parent = getattr(self, "parent_window", None)
+        points = parent.point_manager.points if parent is not None else []
+        object_ids = sorted(set(p["object_id"] for p in points if "object_id" in p))
+        settings_mgr = get_settings_manager()
+        object_names = settings_mgr.get_session_setting("object_names", {})
+        selected = settings_mgr.get_session_setting("matany_object", -1)
+
+        combo = self.matting_object_combo
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("All Objects", -1)
+        for object_id in object_ids:
+            name = object_names.get(str(object_id), "")
+            combo.addItem(f"{object_id}: {name}" if name else f"Object {object_id}", object_id)
+        index = combo.findData(selected)
+        combo.setCurrentIndex(index if index >= 0 else 0)
+        combo.blockSignals(False)
 
     def update_matting_status(self, is_propagated):
         """Update the Run Matting button text based on propagation state"""
@@ -1307,6 +1423,7 @@ class MainWindow(QMainWindow):
             # Connect postprocessing tab sliders
             matting_tab.shrink_grow_slider.valueChanged.connect(lambda _: self._update_current_frame_display())
             matting_tab.gamma_slider.valueChanged.connect(lambda _: self._update_current_frame_display())
+            matting_tab.ck_despill_combo.currentTextChanged.connect(lambda _: self._update_current_frame_display())
 
 
             # Store reference to matting tab for status updates
@@ -1827,6 +1944,7 @@ class MainWindow(QMainWindow):
             # Switch to Segmentation-Edit view
             target_view = "Segmentation-Edit"
         elif current_tab == self.sidebar.matting_tab:
+            self.sidebar.matting_tab.refresh_object_combo()
             # Switch to Matting-Matte view
             target_view = "Matting-Matte"
         elif current_tab == self.sidebar.removal_tab:
@@ -2267,9 +2385,21 @@ class MainWindow(QMainWindow):
         count = len(self.point_manager.points)
         matting_model = self.settings_mgr.get_session_setting("matany_model", "MatAnyone2")
         combined=self.settings_mgr.get_session_setting("matany_combined", False)
+        points = self.point_manager.points
+        selected_object = self.settings_mgr.get_session_setting("matany_object", -1)
+        if not combined and selected_object != -1:
+            points = [p for p in points if p.get("object_id") == selected_object]
+            if not points:
+                show_message_dialog(self, title="Error", message=f"Object {selected_object} has no points. Choose another object in the Matting tab.", type="warning")
+                self.matting_tab.refresh_object_combo()
+                return
+            print(f"Matting only object {selected_object}")
+        if matting_model != "CorridorKey":
+            # Foreground colour from an earlier CorridorKey run no longer matches the new matte
+            core.clear_matting_fg(None if combined else sorted(set(p["object_id"] for p in points)))
 
         # Don't allow VideoMama on CPU
-        if core.DeviceManager.get_device().type == 'cpu' and matting_model in ('VideoMaMa', 'LTX Alpha'):
+        if core.DeviceManager.get_device().type == 'cpu' and matting_model in ('VideoMaMa', 'LTX Alpha', 'CorridorKey'):
             show_message_dialog(self, title="Error" , message=f"{matting_model} is not supported on CPU. Please use MatAnyone instead.", type="warning")
             return
 
@@ -2286,7 +2416,7 @@ class MainWindow(QMainWindow):
                 return
             QApplication.processEvents()
             try:
-                self.matany_manager.run_matting(self.point_manager.points, parent_window=self, combined=combined)
+                self.matany_manager.run_matting(points, parent_window=self, combined=combined)
             except Exception as e:
                 if "out of memory" in str(e):
                     show_message_dialog(self, title="Error", message="An out of memory error occurred. Please try again with lower settings." , type="warning")
@@ -2352,6 +2482,19 @@ class MainWindow(QMainWindow):
         """Update the matting status display"""
         if hasattr(self, 'matting_tab'):
             self.matting_tab.update_matting_status(self.matany_manager.propagated)
+        self._refresh_corridorkey_views()
+
+    def _refresh_corridorkey_views(self):
+        """Offer the CorridorKey views only while CorridorKey foreground colour exists."""
+        have_fg = core.has_matting_fg()
+        for offset, name in enumerate(CORRIDORKEY_VIEWS):
+            index = self.view_combo.findText(name)
+            if have_fg and index < 0:
+                self.view_combo.insertItem(self.view_combo.findText("Matting-BGcolor") + 1 + offset, name)
+            elif not have_fg and index >= 0:
+                if self.view_combo.currentIndex() == index:
+                    self.view_combo.setCurrentText("Matting-Matte")
+                self.view_combo.removeItem(index)
 
     def update_removal_status(self):
         """Update the removal status display"""

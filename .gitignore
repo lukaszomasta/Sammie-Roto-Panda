@@ -17,6 +17,9 @@ LTX_MODELS/
 ltx_core/
 ltx_pipelines/
 
+# CorridorKey 2.0 code: separately licensed, installed by install_dependencies.sh
+CorridorKey2.0/
+
 # Runtime and per-user state
 temp/
 sammie_settings.conf

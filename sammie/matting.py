@@ -7,7 +7,7 @@ import numpy as np
 import torch
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QProgressDialog
-from sammie.model_downloader import ensure_models, ensure_local_model, MODEL_REGISTRY
+from sammie.model_downloader import ensure_models, ensure_local_model, MODEL_GROUPS, MODEL_REGISTRY
 from sammie.settings_manager import get_settings_manager
 from tqdm import tqdm
 from sammie import core
@@ -259,6 +259,7 @@ class MattingManager:
         if os.path.exists(core.matting_dir):
             shutil.rmtree(core.matting_dir)
         os.makedirs(core.matting_dir)
+        core.clear_matting_fg()
         self.propagated = False
         print("Matting data cleared")
 
@@ -1467,6 +1468,11 @@ class LTXAlphaManager(MattingManager):
         from sammie.ltx_alpha import LTX_DIR, LTXAlphaPipeline, fp8_supported, missing_code, missing_files
 
         missing = missing_code()
+        if missing and ensure_models("ltx_code", parent=parent_window, title="LTX-2 code", confirm=True):
+            import importlib
+
+            importlib.invalidate_caches()
+            missing = missing_code()
         if missing:
             QMessageBox.warning(
                 parent_window,
@@ -1478,6 +1484,13 @@ class LTXAlphaManager(MattingManager):
             return False
         device = self._prepare_device(load_to_cpu)
         missing = missing_files(fp8=fp8_supported(device))
+        if missing and fp8_supported(device):
+            # The prebuilt fp8 files exist only for NVIDIA; other GPUs need the bf16 build (README)
+            specs = [s for s in MODEL_GROUPS["ltx_alpha_fp8"]
+                     if any(s.filename in m for m in missing) or s.filename == "LICENSE-2_x"]
+            if not ensure_models(specs, parent=parent_window, title="LTX Alpha models", confirm=True):
+                return False
+            missing = missing_files(fp8=True)
         if missing:
             QMessageBox.warning(
                 parent_window,
@@ -1769,6 +1782,259 @@ class LTXAlphaManager(MattingManager):
         path = os.path.join(core.matting_dir, f"{frame_num:05d}", f"{object_id}.png")
         os.makedirs(os.path.dirname(path), exist_ok=True)
         cv2.imwrite(path, full)
+
+
+# ---------------------------------------------------------------------------
+# CorridorKey backend
+# ---------------------------------------------------------------------------
+
+class CorridorKeyManager(MattingManager):
+    """
+    Matting manager that uses CorridorKey 2.0.
+
+    The tracked SAM masks are passed as CorridorKey's full per-frame hint, so SAM picks the
+    subject and CorridorKey keys it. Besides the matte it writes the predicted foreground
+    colour to core.matting_fg_dir, used by the CorridorKey views and exports.
+    """
+
+    BACKEND = "corridorkey"
+
+    def __init__(self):
+        super().__init__()
+        self.pipeline = None
+
+    def unload_matting_model(self):
+        if self.pipeline is not None:
+            self.pipeline.close()
+            self.pipeline = None
+        gc.collect()
+        core.DeviceManager.clear_cache()
+        print("Unloaded CorridorKey model")
+
+    def load_matting_model(self, load_to_cpu=False, parent_window=None):
+        from PySide6.QtWidgets import QMessageBox
+        from sammie.corridorkey import CK_DIR, CorridorKeyPipeline, missing_code, missing_files
+
+        # Download whatever is missing (nothing, on an offline copy with everything in place)
+        missing = missing_code()
+        if missing:
+            if not ensure_models(missing, parent=parent_window, title="CorridorKey code", confirm=True):
+                return False
+            missing = missing_code()
+            if missing:
+                QMessageBox.warning(
+                    parent_window,
+                    "CorridorKey Code Missing",
+                    "CorridorKey's code could not be set up:\n\n" + "\n".join(missing)
+                    + "\n\nSee \"CorridorKey setup\" in README.md.",
+                )
+                return False
+        if missing_files() and not ensure_models("corridorkey", parent=parent_window,
+                                                 title="CorridorKey models", confirm=True):
+            return False
+        missing = missing_files()
+        if missing:
+            QMessageBox.warning(
+                parent_window,
+                "Model Files Missing",
+                "CorridorKey needs these files in\n"
+                f"{os.path.abspath(CK_DIR)}:\n\n" + "\n".join(missing)
+                + "\n\nSee \"CorridorKey setup\" in README.md.",
+            )
+            return False
+
+        device = self._prepare_device(load_to_cpu)
+        try:
+            self.pipeline = CorridorKeyPipeline(device)
+        except Exception as e:
+            print(f"Error loading CorridorKey: {e}")
+            self.pipeline = None
+            return False
+
+        settings_mgr = get_settings_manager()
+        print(
+            f"Loaded CorridorKey to {device} with hint trust={settings_mgr.get_session_setting('ck_hint_quality', 0.75)}, "
+            f"window={settings_mgr.get_session_setting('ck_chunk', 0) or 'Auto'}, "
+            f"carry={settings_mgr.get_session_setting('ck_carry', True)}"
+        )
+        return True
+
+    def run_matting(self, points_list, parent_window, combined=False):
+        if self.pipeline is None:
+            print("CorridorKey model not loaded")
+            return 0
+
+        core.DeviceManager.clear_cache()
+        frame_count = core.VideoInfo.total_frames
+        start_frame, end_frame, frames_to_process = self._get_frame_range()
+        print(f"Processing matting from frame {start_frame} to {end_frame} ({frames_to_process} frames)")
+
+        object_ids = sorted(set(point["object_id"] for point in points_list if "object_id" in point))
+        if not object_ids:
+            print("No objects found for matting")
+            return 0
+
+        if combined and len(object_ids) > 1:
+            combine_ids = object_ids
+            object_ids = [0]
+        else:
+            combine_ids = None
+
+        os.makedirs(core.matting_dir, exist_ok=True)
+        if combined and os.path.exists(core.matting_dir):
+            for frame_dirname in os.listdir(core.matting_dir):
+                frame_dir = os.path.join(core.matting_dir, frame_dirname)
+                if os.path.isdir(frame_dir):
+                    for f in os.listdir(frame_dir):
+                        if f != "0.png":
+                            os.remove(os.path.join(frame_dir, f))
+            core.clear_matting_fg()
+
+        total_operations = frames_to_process * len(object_ids)
+        progress_dialog, pbar = self._make_progress_dialog(parent_window, total_operations)
+        operations_completed = 0
+
+        try:
+            for object_id in object_ids:
+                if progress_dialog.wasCanceled():
+                    break
+                pbar.set_description(f"Object {object_id}")
+                done = self._process_object(
+                    object_id, start_frame, end_frame, progress_dialog, pbar,
+                    operations_completed, total_operations, parent_window, combine_ids=combine_ids,
+                )
+                if done is None:
+                    break
+                operations_completed += done
+        except Exception:
+            pbar.close()
+            progress_dialog.close()
+            raise
+
+        pbar.close()
+        core.DeviceManager.clear_cache()
+
+        if progress_dialog.wasCanceled():
+            print("Matting cancelled")
+            self.propagated = False
+            progress_dialog.close()
+            return 0
+        progress_dialog.setValue(100)
+        self.propagated = frame_count == frames_to_process
+        print("Matting completed")
+        self._notify("matting_complete")
+        return 1
+
+    def _load_hint(self, frame_num, object_id, combine_ids, shape):
+        """Binary SAM2 mask (with segmentation postprocessing), union for combined mode."""
+        ids = combine_ids if combine_ids else [object_id]
+        union = None
+        for oid in ids:
+            m = cv2.imread(os.path.join(core.mask_dir, f"{frame_num:05d}", f"{oid}.png"), cv2.IMREAD_GRAYSCALE)
+            if m is not None:
+                union = m if union is None else np.maximum(union, m)
+        if union is None:
+            return np.zeros(shape, np.uint8)
+        return core.apply_mask_postprocessing(union)
+
+    def _process_object(self, object_id, start_frame, end_frame, progress_dialog, pbar,
+                        operations_completed, total_operations, parent_window, combine_ids=None):
+        import shutil
+
+        settings_mgr = get_settings_manager()
+        display_update_frequency = settings_mgr.get_app_setting("display_update_frequency", 5)
+        res = settings_mgr.get_session_setting("matany_res", 0)
+        extension = core.get_frame_extension()
+        frames_to_process = end_frame - start_frame + 1
+
+        # The runtime reads a folder of frames and a matching folder of hints, so give it
+        # just the processing range: hard links where the filesystem allows, or frames scaled
+        # down to the internal resolution (the runtime itself only renders at native size).
+        work_dir = os.path.join(core.temp_dir, "corridorkey_work")
+        shutil.rmtree(work_dir, ignore_errors=True)
+        frame_dir = os.path.join(work_dir, "frames")
+        hint_dir = os.path.join(work_dir, "hints")
+        os.makedirs(frame_dir)
+        os.makedirs(hint_dir)
+
+        progress_dialog.setLabelText(f"Object {object_id}: Preparing frames and hints...")
+        QApplication.processEvents()
+        first = cv2.imread(os.path.join(core.frames_dir, f"{start_frame:05d}.{extension}"))
+        full_h, full_w = first.shape[:2]
+        scale = 1.0 if res <= 0 else min(1.0, res / min(full_h, full_w))
+        work_size = (max(64, round(full_w * scale)), max(64, round(full_h * scale)))
+        has_hint = False
+        for frame_num in range(start_frame, end_frame + 1):
+            src = os.path.join(core.frames_dir, f"{frame_num:05d}.{extension}")
+            dst = os.path.join(frame_dir, f"{frame_num:05d}.{extension}")
+            hint = self._load_hint(frame_num, object_id, combine_ids, (full_h, full_w))
+            has_hint = has_hint or bool(hint.any())
+            if scale < 1.0:
+                cv2.imwrite(dst, cv2.resize(cv2.imread(src), work_size, interpolation=cv2.INTER_AREA))
+                hint = cv2.resize(hint, work_size, interpolation=cv2.INTER_AREA)
+            else:
+                try:
+                    os.link(src, dst)
+                except OSError:
+                    shutil.copy2(src, dst)
+            cv2.imwrite(os.path.join(hint_dir, f"{frame_num:05d}.png"), hint)
+            if progress_dialog.wasCanceled():
+                shutil.rmtree(work_dir, ignore_errors=True)
+                return None
+        if not has_hint:
+            print(f"Object {object_id}: no mask content in range, skipping")
+            shutil.rmtree(work_dir, ignore_errors=True)
+            pbar.update(frames_to_process)
+            return frames_to_process
+
+        written = {"alpha": 0, "fg": 0}
+
+        def _on_frames(kind, frames):
+            for frame in frames:
+                frame_num = start_frame + written[kind]
+                written[kind] += 1
+                out = frame[..., 0] if kind == "alpha" else frame
+                if scale < 1.0:
+                    out = cv2.resize(out, (full_w, full_h), interpolation=cv2.INTER_LINEAR)
+                out = (out.astype(np.float32) / 257.0).round().astype(np.uint8)
+                if kind == "alpha":
+                    path = os.path.join(core.matting_dir, f"{frame_num:05d}", f"{object_id}.png")
+                else:
+                    path = os.path.join(core.matting_fg_dir, f"{frame_num:05d}", f"{object_id}.png")
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                cv2.imwrite(path, out)
+                if kind == "alpha":
+                    pbar.update(1)
+                    if frame_num % display_update_frequency == 0:
+                        try:
+                            parent_window.frame_slider.setValue(frame_num)
+                        except Exception:
+                            pass
+            progress_dialog.setLabelText(
+                f"Object {object_id}: frame {written['alpha']}/{frames_to_process}")
+            done = operations_completed + written["alpha"]
+            progress_dialog.setValue(min(int(done * 100 / max(total_operations, 1)), 99))
+            QApplication.processEvents()
+            if progress_dialog.wasCanceled():
+                raise RuntimeError("USER_CANCELLED")
+
+        progress_dialog.setLabelText(f"Object {object_id}: Extracting features...")
+        QApplication.processEvents()
+        try:
+            self.pipeline.run(
+                frame_dir, hint_dir, os.path.join(work_dir, "run"), _on_frames,
+                fps=core.VideoInfo.fps or 24.0,
+                hint_quality=float(settings_mgr.get_session_setting("ck_hint_quality", 0.75)),
+                carry_hint=bool(settings_mgr.get_session_setting("ck_carry", True)),
+                chunk=int(settings_mgr.get_session_setting("ck_chunk", 0)),
+            )
+        except RuntimeError as e:
+            if str(e) == "USER_CANCELLED":
+                return None
+            raise
+        finally:
+            shutil.rmtree(work_dir, ignore_errors=True)
+        return frames_to_process
 
 
 # ---------------------------------------------------------------------------
@@ -2071,6 +2337,8 @@ def create_matting_manager() -> MattingManager:
         return VideoMaMaManager()
     if matting_model == "LTX Alpha":
         return LTXAlphaManager()
+    if matting_model == "CorridorKey":
+        return CorridorKeyManager()
     if matting_model.startswith("ViTMatte"):
         return ViTMatteManager()
     if matting_model.startswith("MEMatte"):

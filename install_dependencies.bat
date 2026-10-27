@@ -72,5 +72,16 @@ if not errorlevel 2 (
     "%PY%" -m pip install --no-deps "ltx-core @ git+https://github.com/Lightricks/LTX-2.git@be6d6d0a69d11a0a399c462ed92606692e5f8697#subdirectory=packages/ltx-core" "ltx-pipelines @ git+https://github.com/Lightricks/LTX-2.git@be6d6d0a69d11a0a399c462ed92606692e5f8697#subdirectory=packages/ltx-pipelines" %PIPFLAGS%
 )
 
+rem CorridorKey 2.0 code (Corridor Key Licence, not part of this repository). NVIDIA GPUs only.
+rem utils3d is needed by its bundled MoGe code; --no-deps skips moderngl, which is never used.
+echo.
+choice /C YN /N /M "Install the CorridorKey 2.0 code (needs git; Corridor Key Licence; NVIDIA GPUs only)? [Y/N]"
+if not errorlevel 2 (
+    if not exist CorridorKey2.0 git clone https://github.com/nikopueringer/CorridorKey2.0.git CorridorKey2.0
+    git -C CorridorKey2.0 fetch --quiet origin
+    git -C CorridorKey2.0 checkout --quiet 485f5e9ab759ead6138cc990776184b59d6ea971
+    "%PY%" -m pip install --no-deps "utils3d @ git+https://github.com/EasternJournalist/utils3d.git@83bfa5bda008803f6521ce9547f94023b8afeddd" %PIPFLAGS%
+)
+
 echo Completed. Models are not downloaded automatically - see README.md.
 pause

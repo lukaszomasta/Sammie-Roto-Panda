@@ -132,4 +132,18 @@ if [[ "$LTX_ANSWER" =~ ^[Yy]$ ]]; then
     fi
 fi
 
+# CorridorKey 2.0 code for the CorridorKey matting model (Corridor Key Licence, not part
+# of this repository). NVIDIA GPUs only. utils3d is needed by its bundled MoGe code;
+# --no-deps skips moderngl, which CorridorKey never uses.
+echo
+read -r -p "Install the CorridorKey 2.0 code (Corridor Key Licence; NVIDIA GPUs only)? [y/N] " CK_ANSWER
+if [[ "$CK_ANSWER" =~ ^[Yy]$ ]]; then
+    CK_REF="485f5e9ab759ead6138cc990776184b59d6ea971"
+    if [ ! -d CorridorKey2.0 ]; then
+        git clone https://github.com/nikopueringer/CorridorKey2.0.git CorridorKey2.0
+    fi
+    git -C CorridorKey2.0 fetch --quiet origin && git -C CorridorKey2.0 checkout --quiet "$CK_REF"
+    pip3 install --no-deps "utils3d @ git+https://github.com/EasternJournalist/utils3d.git@83bfa5bda008803f6521ce9547f94023b8afeddd"
+fi
+
 echo "Setup complete. Models are not downloaded automatically - see README.md."

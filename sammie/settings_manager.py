@@ -123,9 +123,14 @@ class SessionSettings:
     matany_overlap: int = 2
     matany_chunk: int = 16
     matany_combined: bool = False
+    matany_object: int = -1         # object to matte, -1 = all objects
     ltx_res: int = 736
     ltx_chunk: int = 97
     ltx_overlap: int = 8
+    ck_hint_quality: float = 0.75   # CorridorKey: trust in the SAM mask hint
+    ck_chunk: int = 0               # CorridorKey: Hann window frames, 0 = auto from free VRAM
+    ck_carry: bool = True           # CorridorKey: carry its own matte as hint between windows
+    ck_despill: float = 0.5         # CorridorKey: despill strength for views/exports
 
     # Object removal parameters
     inpaint_method: str = "Telea"
@@ -373,9 +378,14 @@ class SettingsManager:
             'matany_overlap': self.session_settings.matany_overlap,
             'matany_chunk': self.session_settings.matany_chunk,
             'matany_combined': self.session_settings.matany_combined,
+            'matany_object': self.session_settings.matany_object,
             'ltx_res': self.session_settings.ltx_res,
             'ltx_chunk': self.session_settings.ltx_chunk,
-            'ltx_overlap': self.session_settings.ltx_overlap
+            'ltx_overlap': self.session_settings.ltx_overlap,
+            'ck_hint_quality': self.session_settings.ck_hint_quality,
+            'ck_chunk': self.session_settings.ck_chunk,
+            'ck_carry': self.session_settings.ck_carry,
+            'ck_despill': self.session_settings.ck_despill
         }
     
     def get_inpainting_params(self) -> Dict[str, Any]:

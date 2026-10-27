@@ -87,10 +87,12 @@ class Sam3Manager(BaseSamManager):
 
     def load_segmentation_model(self, model=None, parent_window=None):
         if not self._sam3_files_present():
+            ensure_models("SAM3", parent=parent_window, title="SAM3 model", confirm=True)
+        if not self._sam3_files_present():
             missing = [f for f in self._REQUIRED_FILES if not os.path.exists(os.path.join(self._SAM3_DIR, f))]
             show_message_dialog(
                 parent_window, title="Model Files Missing",
-                message=f"SAM3 requires manual placement of model files.\n\n"
+                message=f"SAM3 model files are missing (gated: request access at https://huggingface.co/facebook/sam3).\n\n"
                         f"Missing from {self._SAM3_DIR}:\n" + "\n".join(missing),
                 type="warning"
             )
@@ -724,6 +726,8 @@ def update_image(slider_value, view_options, points, return_numpy=False, object_
         return _handle_matting_bgcolor_view(slider_value, view_options, points, return_numpy, object_id_filter)
     elif view_mode == "Matting-Alpha":
         return _handle_matting_alpha_view(slider_value, view_options, points, return_numpy, object_id_filter)
+    elif view_mode in ("CorridorKey-FG", "CorridorKey-Despill", "CorridorKey-Despill-Alpha"):
+        return _handle_corridorkey_view(slider_value, view_options, points, return_numpy, object_id_filter)
     elif view_mode == "ObjectRemoval":
         return _handle_object_removal_view(slider_value, view_options, points, return_numpy, object_id_filter)
     elif view_mode == "None":
@@ -945,6 +949,42 @@ def _handle_matting_alpha_view(frame_number, view_options, points, return_numpy=
         return image_rgba
     else:
         return _convert_to_qpixmap(image_rgba)
+
+
+def _handle_corridorkey_view(frame_number, view_options, points, return_numpy=False, object_id_filter=None):
+    """Handle CorridorKey views: predicted foreground colour, despilled, or despilled with the matte as alpha"""
+    from sammie.corridorkey import despill
+    from sammie.settings_manager import get_settings_manager
+
+    view_mode = view_options.get("view_mode")
+    if object_id_filter is not None:
+        object_ids = [object_id_filter]
+    else:
+        object_ids = sorted(set(p["object_id"] for p in points if "object_id" in p)) or [0]
+        # A combined run stores its result as object 0
+        if 0 not in object_ids:
+            object_ids.append(0)
+    image = core.load_matting_fg(frame_number, object_ids)
+    if image is None:
+        image = core.load_base_frame(frame_number)
+        if image is None:
+            return None
+        image = np.zeros_like(image)
+    if view_mode != "CorridorKey-FG":
+        image = despill(image, get_settings_manager().get_session_setting("ck_despill", 0.5))
+    if view_mode == "CorridorKey-Despill-Alpha":
+        mask = core.load_masks_for_frame(frame_number, points, return_combined=True,
+                                    object_id_filter=object_id_filter, folder=core.matting_dir)
+        if mask is None:
+            mask = np.zeros(image.shape[:2], np.uint8)
+        else:
+            mask = core.apply_matany_postprocessing(mask)
+        image = cv2.merge([image[:, :, 0], image[:, :, 1], image[:, :, 2], mask])
+
+    if return_numpy:
+        return image
+    else:
+        return _convert_to_qpixmap(image)
 
 
 def _handle_object_removal_view(frame_number, view_options, points, return_numpy=False, object_id_filter=None):

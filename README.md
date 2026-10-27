@@ -1,12 +1,18 @@
-# Sammie-Roto 2 — panda fork (2.3.3+panda.2.1)
+# Sammie-Roto 2 — panda fork (2.3.3+panda.3.0)
 
 A personal fork of [Sammie-Roto 2](https://github.com/Zarxrax/Sammie-Roto-2) by Zarxrax, based on version **2.3.3**. It adds segmentation and matting models to the original app. Everything else works as upstream: see the original README below.
 
-> **Models are not included and mostly not downloaded for you.** Several of them are gated on Hugging Face, so you need to accept their licenses and download them yourself. The [Models](#models) section lists every file and where it goes.
+> **Models are downloaded the first time you use them.** Sammie checks for each file and downloads only what is missing, after asking. A copy that already has every file in place (such as an offline or air-gapped install) never touches the network; the code is the same. SAM3 and LTX Alpha are gated on Hugging Face: request access on their pages and log in on the computer once (`hf auth login`, or set `HF_TOKEN`). MEMatte is only on Google Drive, so it has to be placed by hand. The [Models](#models) section lists every file and where it goes.
 
 Tested on Rocky Linux with NVIDIA GPUs (RTX 4060 8 GB and RTX 5000 32 GB, CUDA 13.0, PyTorch 2.10), on Windows with an NVIDIA GPU, and on Apple Silicon Macs.
 
 ## What's new
+
+**2.3.3+panda.3.0**
+- **CorridorKey matting.** Corridor Digital's [CorridorKey 2.0](https://github.com/nikopueringer/CorridorKey2.0), made for green and blue screen. The tracked SAM masks are its per-frame hint, so SAM picks the subject and CorridorKey keys it. Besides the matte it predicts the clean foreground colour: the new **CorridorKey-FG**, **CorridorKey-Despill** and **CorridorKey-Despill-Alpha** views and export types appear after a CorridorKey run. Options: hint trust, window size (Auto / 8 / 24 / 48 / 80), carry matte between windows, and despill strength (applied when viewing or exporting).
+- **Matte one object at a time.** A dropdown next to "Combine All Objects" picks the object to matte; the other objects' mattes are kept, so objects can be processed and exported one by one.
+- LTX Alpha: 25-frame batches for short shots (batches must be 8n+1 frames) and 0 crossfade overlap.
+- **One code base for online and offline installs.** SAM3, LTX Alpha (NVIDIA) and CorridorKey now download their missing files on first use, like the upstream models, including the LTX-2 and CorridorKey code at the tested commits. Every file is checked on its own and verified by MD5, and files already in place are never downloaded again. Gated repositories use your Hugging Face login and explain what to do when access is missing.
 
 **2.3.3+panda.2.1**
 - Windows and macOS: `install_dependencies.bat` works from a git clone (venv) and `run_sammie.bat` was added; detectron2 is optional, so Sammie starts without it; LTX Alpha uses bf16 on non-NVIDIA GPUs and disables float16 autocast, which can overflow this model.
@@ -32,6 +38,7 @@ Tested on Rocky Linux with NVIDIA GPUs (RTX 4060 8 GB and RTX 5000 32 GB, CUDA 1
 | Upstream features, SAM3 | tested | tested | tested |
 | ViTMatte, MEMatte | tested | tested; needs detectron2 (see below) | needs detectron2 (see below) |
 | LTX Alpha | tested (8 GB and 32 GB GPUs) | tested | tested; bf16 only (no fp8); needs 64 GB+ unified memory |
+| CorridorKey | tested (8 GB GPU) | not tested | not supported (needs CUDA) |
 
 Without detectron2 Sammie still starts; only ViTMatte and MEMatte are unavailable. ViTMatte and MEMatte use only detectron2's Python code, not its compiled C++ extension, so if the build fails (Windows needs Visual Studio, macOS the Xcode command line tools), copying the `detectron2` folder of the [pinned commit](https://github.com/facebookresearch/detectron2/tree/02b5c4e295e990042a714712c21dc79b731e8833) into `site-packages` and running `pip install fvcore iopath pycocotools` is enough.
 
@@ -46,7 +53,7 @@ bash install_dependencies.sh
 ./run_sammie.command
 ```
 
-The installer creates `venv/`, installs PyTorch (choose CUDA 13.0 for RTX cards), the requirements and detectron2 (needs a C++ compiler; on macOS run `xcode-select --install` first), and offers to install the LTX-2 code (see [LTX Alpha setup](#ltx-alpha-setup)).
+The installer creates `venv/`, installs PyTorch (choose CUDA 13.0 for RTX cards), the requirements and detectron2 (needs a C++ compiler; on macOS run `xcode-select --install` first), and offers to install the LTX-2 code (see [LTX Alpha setup](#ltx-alpha-setup)) and the CorridorKey code (see [CorridorKey setup](#corridorkey-setup)).
 
 ### Windows
 
@@ -70,7 +77,7 @@ SAM2, EfficientTAM, MatAnyone, MatAnyone2, MiniMax-Remover and VideoMaMa work as
 
 ### SAM3 (panda.1)
 
-Gated: request access at [facebook/sam3](https://huggingface.co/facebook/sam3) first.
+Gated: request access at [facebook/sam3](https://huggingface.co/facebook/sam3) first. Downloaded on first use when you are logged in to Hugging Face; otherwise place the files yourself:
 
 | File | Put it in |
 |---|---|
@@ -96,6 +103,8 @@ Gated: accept the license on both Lightricks repositories first.
 | `ltx-2.5-22b-ic-lora-alpha-gen-0.9.safetensors` | [Lightricks/LTX-2.5-22b-IC-LoRA-Alpha-Gen](https://huggingface.co/Lightricks/LTX-2.5-22b-IC-LoRA-Alpha-Gen) | 1.2 | setup (or runtime without the fp8 build) |
 
 Put everything except Gemma in `checkpoints/ltx_alpha/`. Gemma can live anywhere; it's only read once.
+
+On NVIDIA GPUs you normally don't need these: when files are missing, Sammie offers to download the prebuilt fp8 files (see the shortcut below; gated, needs a Hugging Face login with access to both repositories), the two VAEs and the LTX-2 code.
 
 ## LTX Alpha setup
 
@@ -136,15 +145,41 @@ This writes `checkpoints/ltx_alpha/ltx-2.5-22b-distilled-alpha-gen-0.9-bf16-fuse
 
 **Hardware.** GPUs with 30 GiB of VRAM or more keep the whole model on the GPU. Smaller GPUs stream the transformer from system RAM. An 8 GB RTX 4060 with 62 GB RAM runs a 992×576 crop in batches of 49 frames (about 2.5 minutes per batch, 5.1 GiB VRAM peak). Resolutions of 1088 and above may run out of memory.
 
+## CorridorKey setup
+
+Sammie downloads the code and all weights (public, no login needed) the first time you use CorridorKey, after asking. To set it up by hand instead, for example for an offline copy:
+
+1. **Install the code.** Answer `y` when `install_dependencies.sh` asks, or run:
+   ```bash
+   git clone https://github.com/nikopueringer/CorridorKey2.0.git CorridorKey2.0
+   git -C CorridorKey2.0 checkout 485f5e9ab759ead6138cc990776184b59d6ea971
+   venv/bin/pip install --no-deps "utils3d @ git+https://github.com/EasternJournalist/utils3d.git@83bfa5bda008803f6521ce9547f94023b8afeddd"
+   ```
+   The checkout must be in `CorridorKey2.0/` inside the Sammie folder. It includes the MoGe code.
+
+2. **Get the weights** (4.8 GB in all) and put them in `checkpoints/corridorkey/`, keeping these subfolders:
+
+   | Files | Source | Put it in |
+   |---|---|---|
+   | `corridorkey_v2.safetensors` (2.7 GB), `foundation_stats.safetensors` | [nikopueringer/CorridorKey2.0](https://huggingface.co/nikopueringer/CorridorKey2.0) | `checkpoints/corridorkey/weights/` |
+   | the whole repository except `*.pth.tar`, at revision `c0457f5dc26ca145f954cd4fc5bb6114e5705ad8` (1.7 GB) | [nvidia/C-RADIOv4-SO400M](https://huggingface.co/nvidia/C-RADIOv4-SO400M) | `checkpoints/corridorkey/vfms/cradio/C-RADIOv4-SO400M/` |
+   | `model.pt` at revision `ca5f0e07ff01d3e5a364c1d954ed12ee1814b368` (0.4 GB) | [Ruicheng/moge-2-vitb-normal](https://huggingface.co/Ruicheng/moge-2-vitb-normal) | `checkpoints/corridorkey/vfms/moge/` |
+   | [`pretrain_rvm_small16_256_204031069.npz`](https://storage.googleapis.com/representations4d/checkpoints/pretrain_rvm_small16_256_204031069.npz) (0.3 GB) | Google DeepMind [representations4d](https://github.com/google-deepmind/representations4d) | `checkpoints/corridorkey/vfms/rvm/` |
+
+   C-RADIO, MoGe and RVM are frozen feature extractors that CorridorKey was trained on, so all three are needed. If something is missing, Sammie lists it when you load the model.
+
+**Hardware.** NVIDIA GPUs only (RTX 30-series or newer). With the window set to Auto, CorridorKey picks the largest window that fits in free VRAM. An 8 GB RTX 4060 runs 1920×912 footage at about 2 frames/s (4-frame windows). Larger windows are more stable over time: on a 32 GB card expect around 48 frames at 1080p. "Internal Resolution" scales the frames down before matting.
+
 ## Licenses
 
 - **Sammie-Roto** and this fork's code: [GPL-3.0](LICENSE).
 - **LTX-2 code and weights** (Lightricks): [LTX-2.x Community License](https://github.com/Lightricks/LTX-2/blob/main/LICENSE-2_x). Not included in this repository. Among other terms, organizations with annual revenue of $10M or more need a paid commercial license from Lightricks.
+- **CorridorKey 2.0** code and weights (Corridor Digital): Corridor Key Licence, a variant of CC BY-NC-SA 4.0. Not included in this repository. You may use it on commercial work, but you may not sell it or charge for access to it; organizations with more than US $20M annual revenue need a paid seat per user. Its foundation models have their own licenses: C-RADIOv4 (NVIDIA Open Model License), MoGe-2 (MIT), RVM (Apache 2.0 code, CC BY 4.0 weights).
 - **ViTMatte** code in `sammie/vitmatte/`: MIT ([LICENSE](sammie/vitmatte/LICENSE)). **MEMatte** code in `sammie/mematte/`: MIT, as stated in its README ([LICENSE](sammie/mematte/LICENSE)).
 - **Gemma 4** is released under Apache 2.0. It is only used once, to make the LTX empty-prompt embedding, and is never shipped or loaded by Sammie.
 - **SAM3** (Meta) and the upstream models' weights are covered by their own licenses; check each source before use.
 
-This fork is not affiliated with Zarxrax, Lightricks, Meta or Google.
+This fork is not affiliated with Zarxrax, Lightricks, Corridor Digital, NVIDIA, Microsoft, Meta or Google.
 
 ---
 

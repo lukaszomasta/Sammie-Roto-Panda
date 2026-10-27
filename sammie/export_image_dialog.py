@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QFileDialog, QMessageBox
 )
 from PySide6.QtCore import Qt
-from sammie import sammie
+from sammie import core, sammie
 from sammie.gui_widgets import show_message_dialog
 
 
@@ -37,6 +37,8 @@ class ImageExportDialog(QDialog):
         # Output type selection
         self.output_type_combo = QComboBox()
         self.output_type_combo.addItems(['Segmentation-Matte', 'Segmentation-Alpha', 'Segmentation-BGcolor', 'Matting-Matte', 'Matting-Alpha', 'Matting-BGcolor', 'ObjectRemoval'])
+        if core.has_matting_fg():
+            self.output_type_combo.addItems(['CorridorKey-FG', 'CorridorKey-Despill', 'CorridorKey-Despill-Alpha'])
         self.output_type_combo.currentTextChanged.connect(self._on_output_type_changed)
         settings_layout.addRow("Output Type:", self.output_type_combo)
         
@@ -284,6 +286,10 @@ class ImageExportDialog(QDialog):
             return {
                 'view_mode': 'ObjectRemoval',
                 'show_removal_mask': False
+            }
+        elif output_type.startswith('CorridorKey-'):
+            return {
+                'view_mode': output_type
             }
         else:
             # Fallback

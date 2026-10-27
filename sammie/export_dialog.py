@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QFileDialog, QProgressDialog, QMessageBox
 )
 from PySide6.QtCore import Qt
-from sammie.core import VideoInfo
+from sammie.core import VideoInfo, has_matting_fg
 from sammie.gui_widgets import show_message_dialog
 from sammie.export_formats import FormatRegistry, ExportSettings
 from sammie.export_workers import VideoExportWorker, SequenceExportWorker
@@ -291,7 +291,13 @@ class ExportDialog(QDialog):
         # Update output type combo
         current_output = self.output_type_combo.currentText()
         self.output_type_combo.clear()
-        self.output_type_combo.addItems(self.current_format.get_available_output_types())
+        output_types = list(self.current_format.get_available_output_types())
+        # CorridorKey foreground colour, offered only after a CorridorKey run (not for EXR mattes)
+        if has_matting_fg() and 'Matting-BGcolor' in output_types:
+            output_types += ['CorridorKey-FG', 'CorridorKey-Despill']
+            if 'Matting-Alpha' in output_types:
+                output_types.append('CorridorKey-Despill-Alpha')
+        self.output_type_combo.addItems(output_types)
         
         # Restore selection if valid
         new_index = self.output_type_combo.findText(current_output)
@@ -824,7 +830,7 @@ class ExportDialog(QDialog):
             For all other output types, reads from point_manager as usual.
             """
             output_type = self.output_type_combo.currentText()
-            if output_type in ('Matting-Matte', 'Matting-Alpha', 'Matting-BGcolor'):
+            if output_type in ('Matting-Matte', 'Matting-Alpha', 'Matting-BGcolor') or output_type.startswith('CorridorKey-'):
                 return self._get_matting_object_ids()
             if self.parent_window and hasattr(self.parent_window, 'point_manager'):
                 points = self.parent_window.point_manager.get_all_points()

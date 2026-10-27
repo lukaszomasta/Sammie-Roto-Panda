@@ -154,12 +154,12 @@ class SettingsDialog(QDialog):
         mat_layout.addRow("LTX Resolution:", self.default_ltx_res_combo)
 
         self.default_ltx_chunk_combo = QComboBox()
-        self.default_ltx_chunk_combo.addItems(["49", "97", "121", "145"])
+        self.default_ltx_chunk_combo.addItems(["25", "49", "97", "121", "145"])
         self.default_ltx_chunk_combo.setToolTip("Number of frames per batch (LTX Alpha only).")
         mat_layout.addRow("LTX Frames per batch:", self.default_ltx_chunk_combo)
 
         self.default_ltx_overlap_combo = QComboBox()
-        self.default_ltx_overlap_combo.addItems(["2", "4", "8", "16"])
+        self.default_ltx_overlap_combo.addItems(["0", "2", "4", "8", "16"])
         self.default_ltx_overlap_combo.setToolTip("Crossfade frames between batches (LTX Alpha only).")
         mat_layout.addRow("LTX Overlap Frames:", self.default_ltx_overlap_combo)
 

@@ -1,6 +1,7 @@
 # sammie/core.py
 import cv2
 import os
+import shutil
 import numpy as np
 import torch
 import warnings
@@ -16,6 +17,7 @@ mask_dir = os.path.join(temp_dir, "masks")
 backup_dir = os.path.join(temp_dir, "masks_backup")
 matting_dir = os.path.join(temp_dir, "matting")
 removal_dir = os.path.join(temp_dir, "removal")
+matting_fg_dir = os.path.join(temp_dir, "matting_fg")  # CorridorKey foreground colour, same layout as matting_dir
 
 PALETTE = [
     (128, 0, 0), (0, 128, 0), (128, 128, 0), (0, 0, 128), (128, 0, 128), (0, 128, 128),
@@ -233,6 +235,49 @@ class PointManager:
 # .........................................................................................
 # Frame / mask loading utilities
 # .........................................................................................
+
+def has_matting_fg():
+    """True if CorridorKey foreground colour exists for any frame."""
+    if not os.path.isdir(matting_fg_dir):
+        return False
+    return any(os.scandir(matting_fg_dir))
+
+
+def clear_matting_fg(object_ids=None):
+    """Remove CorridorKey foreground colour for object_ids, or all of it when None."""
+    if not os.path.isdir(matting_fg_dir):
+        return
+    if object_ids is None:
+        shutil.rmtree(matting_fg_dir)
+        return
+    for frame_dirname in os.listdir(matting_fg_dir):
+        frame_dir = os.path.join(matting_fg_dir, frame_dirname)
+        for oid in object_ids:
+            path = os.path.join(frame_dir, f"{oid}.png")
+            if os.path.exists(path):
+                os.remove(path)
+        if os.path.isdir(frame_dir) and not os.listdir(frame_dir):
+            os.rmdir(frame_dir)
+
+
+def load_matting_fg(frame_number, object_ids):
+    """Foreground colour (RGB) for one frame; several objects are mixed by their mattes."""
+    fgs, alphas = [], []
+    for oid in object_ids:
+        fg = cv2.imread(os.path.join(matting_fg_dir, f"{frame_number:05d}", f"{oid}.png"))
+        if fg is None:
+            continue
+        a = cv2.imread(os.path.join(matting_dir, f"{frame_number:05d}", f"{oid}.png"), cv2.IMREAD_GRAYSCALE)
+        fgs.append(cv2.cvtColor(fg, cv2.COLOR_BGR2RGB).astype(np.float32))
+        alphas.append(np.ones(fg.shape[:2], np.float32) if a is None else a.astype(np.float32) / 255.0)
+    if not fgs:
+        return None
+    if len(fgs) == 1:
+        return fgs[0].astype(np.uint8)
+    weight = np.stack(alphas)[..., None]
+    mixed = (np.stack(fgs) * weight).sum(0) / np.maximum(weight.sum(0), 1e-6)
+    return mixed.round().clip(0, 255).astype(np.uint8)
+
 
 def get_frame_extension():
     """Get the frame file extension from session settings, fallback to PNG"""

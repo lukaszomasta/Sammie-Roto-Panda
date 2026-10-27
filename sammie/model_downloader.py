@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import ssl
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List
@@ -58,20 +59,40 @@ from PySide6.QtWidgets import (
 )
 
 
+# The portable Python's OpenSSL fails its first TLS setup when that happens off the main
+# thread (SSLError "unknown error"), which is where downloads run. One context made here,
+# at import on the main thread, initialises it.
+ssl.create_default_context()
+
+
 # ---------------------------------------------------------------------------
 # Public data class
 # ---------------------------------------------------------------------------
 
 @dataclass
 class DownloadSpec:
-    """Describes a single file to download."""
+    """Describes a single file to download.
+
+    gated:   model page of a gated Hugging Face repository. The user's Hugging Face token
+             (HF_TOKEN or `hf auth login`) is sent, and a refused download explains what to do.
+    size_mb: approximate size, shown when ensure_models() asks before a large download.
+    extract: for a zip archive (md5 may be None): (prefix inside the zip, destination folder)
+             pairs. The matching members are unpacked and the archive is deleted.
+    present: files whose presence means this spec is done (for archives).
+    name:    saved file name, if it differs from the last part of the URL.
+    """
     url: str
-    md5: str
+    md5: "str | None"
     dest_dir: str
+    gated: "str | None" = None
+    size_mb: int = 0
+    extract: "tuple | None" = None
+    present: "tuple | None" = None
+    name: "str | None" = None
 
     @property
     def filename(self) -> str:
-        return self.url.split("/")[-1]
+        return self.name or self.url.split("/")[-1]
 
     @property
     def final_path(self) -> Path:
@@ -82,6 +103,8 @@ class DownloadSpec:
         return Path(self.dest_dir) / (self.filename + ".part")
 
     def already_downloaded(self) -> bool:
+        if self.present:
+            return all(Path(p).exists() for p in self.present)
         return self.final_path.exists()
 
 
@@ -95,6 +118,32 @@ def _md5(path: Path, chunk: int = 1 << 20) -> str:
         for block in iter(lambda: f.read(chunk), b""):
             h.update(block)
     return h.hexdigest()
+
+
+def _hf_token() -> "str | None":
+    try:
+        from huggingface_hub import get_token
+        return get_token()
+    except Exception:
+        return os.environ.get("HF_TOKEN")
+
+
+def _extract(spec: DownloadSpec) -> None:
+    """Unpack the members of a downloaded zip under each prefix into its destination."""
+    import shutil
+    import zipfile
+
+    with zipfile.ZipFile(spec.part_path) as zf:
+        for prefix, dest in spec.extract:
+            members = [m for m in zf.infolist() if m.filename.startswith(prefix) and not m.is_dir()]
+            if not members:
+                raise RuntimeError(f"{prefix} not found in {spec.filename}")
+            for m in members:
+                target = Path(dest) / m.filename[len(prefix):]
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with zf.open(m) as src, open(target, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+    spec.part_path.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -166,8 +215,19 @@ class _DownloadWorker(QObject):
         self.all_done.emit()
 
     def _download_one(self, idx: int, spec: DownloadSpec) -> None:
-        self._current_response = self._session.get(spec.url, stream=True, timeout=30)
+        headers = {}
+        token = _hf_token() if spec.url.startswith("https://huggingface.co/") else None
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        self._current_response = self._session.get(spec.url, stream=True, timeout=30, headers=headers)
         response = self._current_response
+        if spec.gated and response.status_code in (401, 403):
+            raise RuntimeError(
+                f"{spec.filename} is in a gated repository.\n"
+                f"Request access at {spec.gated} and log in to Hugging Face on this computer "
+                f"(run 'hf auth login', or set the HF_TOKEN environment variable), then try again."
+                + ("" if token else "\nNo Hugging Face token was found.")
+            )
         response.raise_for_status()
 
         total_size = int(response.headers.get("content-length", 0))
@@ -194,6 +254,10 @@ class _DownloadWorker(QObject):
 
         # download finished — no active network socket anymore
         self._current_response = None
+
+        if spec.extract:
+            _extract(spec)
+            return
 
         # Verify checksum
         actual_md5 = _md5(spec.part_path)
@@ -420,6 +484,7 @@ def ensure_models(
     models: "str | DownloadSpec | List[str | DownloadSpec]",
     parent: "QWidget | None" = None,
     title: str = "Downloading Models",
+    confirm: bool = False,
 ) -> bool:
     """
     Ensure one or more models are present, downloading any that are missing.
@@ -430,6 +495,11 @@ def ensure_models(
     - A list of registry key strings:  ["sam2_large", "matanyone"]
     - A DownloadSpec instance:         for ad-hoc specs not in the registry
     - A list mixing keys and specs
+    - A MODEL_GROUPS key:              "corridorkey" (every file that model needs)
+
+    Files already on disk are never downloaded again, so an offline copy with all models in
+    place never touches the network. With confirm=True the user is asked first, with the
+    total size, before anything is downloaded.
 
     Returns True if all models are present (or were successfully downloaded),
     False if the user cancelled or a download failed.
@@ -442,7 +512,9 @@ def ensure_models(
             models = [models]
         specs = []
         for item in models:
-            if isinstance(item, str):
+            if isinstance(item, str) and item in MODEL_GROUPS:
+                specs.extend(MODEL_GROUPS[item])
+            elif isinstance(item, str):
                 if item not in MODEL_REGISTRY:
                     raise KeyError(
                         f"Unknown model key {item!r}. "
@@ -457,6 +529,20 @@ def ensure_models(
     needed = [s for s in specs if not s.already_downloaded()]
     if not needed:
         return True
+
+    if confirm:
+        total_gb = sum(s.size_mb for s in needed) / 1024
+        gated = sorted({s.gated for s in needed if s.gated})
+        names = "\n".join(f"  {s.filename}" for s in needed[:12])
+        if len(needed) > 12:
+            names += f"\n  ... and {len(needed) - 12} more"
+        message = f"{title}: {len(needed)} file(s) are missing (about {total_gb:.1f} GB):\n\n{names}\n\nDownload them now?"
+        if gated:
+            message += ("\n\nSome files are in gated Hugging Face repositories. You need access to\n"
+                        + "\n".join(gated) + "\nand a Hugging Face login on this computer ('hf auth login').")
+        answer = QMessageBox.question(parent, title, message, QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+        if answer != QMessageBox.Yes:
+            return False
 
     dlg = ModelDownloadDialog(needed, parent=parent, title=title)
     accepted = dlg.exec() == QDialog.Accepted
@@ -505,11 +591,6 @@ MODEL_REGISTRY: "dict[str, DownloadSpec]" = {
     "SAM2 Efficient": DownloadSpec(
         url="https://huggingface.co/yunyangx/efficient-track-anything/resolve/main/efficienttam_s_512x512.pt",
         md5="962e151a9dca3b75d8228a16e5264010",
-        dest_dir="checkpoints",
-    ),
-    "SAM3": DownloadSpec(
-        url="https://huggingface.co/facebook/sam3/resolve/main/model.safetensors",
-        md5="f3d84beaa5fe179d5b2808fa533e9954",
         dest_dir="checkpoints",
     ),
     "matanyone": DownloadSpec(
@@ -567,6 +648,325 @@ MODEL_REGISTRY: "dict[str, DownloadSpec]" = {
         md5="1e1bc19026dc5202a9d7e4f7bd12441c",
         dest_dir="checkpoints/mematte",
     ),
+}
+
+
+# Multi-file models, by the name the loaders pass to ensure_models(). Each file is checked
+# on its own, so an offline copy with everything in place never downloads anything.
+MODEL_GROUPS: "dict[str, list[DownloadSpec]]" = {
+    "SAM3": [
+    DownloadSpec(
+        url="https://huggingface.co/facebook/sam3/resolve/main/config.json",
+        md5="760c4d906c4ce85a56b4fb21347d6912",
+        dest_dir="checkpoints/sam3",
+        gated="https://huggingface.co/facebook/sam3",
+        size_mb=1,
+    ),
+    DownloadSpec(
+        url="https://huggingface.co/facebook/sam3/resolve/main/processor_config.json",
+        md5="85f75dabc7f5d4c4865d21639c819cfa",
+        dest_dir="checkpoints/sam3",
+        gated="https://huggingface.co/facebook/sam3",
+        size_mb=1,
+    ),
+    DownloadSpec(
+        url="https://huggingface.co/facebook/sam3/resolve/main/merges.txt",
+        md5="d2bc10797e70c920c14c69729ecdab34",
+        dest_dir="checkpoints/sam3",
+        gated="https://huggingface.co/facebook/sam3",
+        size_mb=1,
+    ),
+    DownloadSpec(
+        url="https://huggingface.co/facebook/sam3/resolve/main/model.safetensors",
+        md5="f3d84beaa5fe179d5b2808fa533e9954",
+        dest_dir="checkpoints/sam3",
+        gated="https://huggingface.co/facebook/sam3",
+        size_mb=3281,
+    ),
+    ],
+    # LTX Alpha on NVIDIA: the prebuilt fp8 transformer with the Alpha-Gen LoRA fused in, the
+    # encoded empty prompt, and Lightricks' VAEs. Apple Silicon needs the bf16 build (README).
+    "ltx_alpha_fp8": [
+    DownloadSpec(
+        url="https://huggingface.co/lomasta/LTX-2.5-22b-Alpha-Gen-fp8-fused/resolve/main/ltx-2.5-22b-distilled-alpha-gen-0.9-fp8-fused.safetensors",
+        md5="68c231c443c04b5ae375e18e7bc2273e",
+        dest_dir="checkpoints/ltx_alpha",
+        gated="https://huggingface.co/lomasta/LTX-2.5-22b-Alpha-Gen-fp8-fused",
+        size_mb=22404,
+    ),
+    DownloadSpec(
+        url="https://huggingface.co/lomasta/LTX-2.5-22b-Alpha-Gen-fp8-fused/resolve/main/empty_prompt_embeddings.safetensors",
+        md5="b7dd1153d6a183dfd8aae8dc4e188429",
+        dest_dir="checkpoints/ltx_alpha",
+        gated="https://huggingface.co/lomasta/LTX-2.5-22b-Alpha-Gen-fp8-fused",
+        size_mb=12,
+    ),
+    DownloadSpec(
+        url="https://huggingface.co/Lightricks/LTX-2.5/resolve/main/vae/ltx-2.5-video-vae-bf16.safetensors",
+        md5="f79dd38c32cca9b421614be53428ed5a",
+        dest_dir="checkpoints/ltx_alpha",
+        gated="https://huggingface.co/Lightricks/LTX-2.5",
+        size_mb=1404,
+    ),
+    DownloadSpec(
+        url="https://huggingface.co/Lightricks/LTX-2.5/resolve/main/vae/ltx-2.5-audio-vae-bf16.safetensors",
+        md5="fdc1459b18ea23ce7829e7a91a51fc09",
+        dest_dir="checkpoints/ltx_alpha",
+        gated="https://huggingface.co/Lightricks/LTX-2.5",
+        size_mb=348,
+    ),
+    DownloadSpec(
+        url="https://huggingface.co/lomasta/LTX-2.5-22b-Alpha-Gen-fp8-fused/resolve/main/LICENSE-2_x",
+        md5="fe460f42798062bc9047895d62a165f7",
+        dest_dir="checkpoints/ltx_alpha",
+        gated="https://huggingface.co/lomasta/LTX-2.5-22b-Alpha-Gen-fp8-fused",
+    ),
+    ],
+    # Lightricks' LTX-2 code at the tested commit, unpacked next to sammie_main.py.
+    "ltx_code": [
+        DownloadSpec(
+            url="https://github.com/Lightricks/LTX-2/archive/be6d6d0a69d11a0a399c462ed92606692e5f8697.zip",
+            md5=None,
+            dest_dir="temp",
+            name="LTX-2-be6d6d0.zip",
+            size_mb=10,
+            extract=(
+                ("LTX-2-be6d6d0a69d11a0a399c462ed92606692e5f8697/packages/ltx-core/src/ltx_core/", "ltx_core"),
+                ("LTX-2-be6d6d0a69d11a0a399c462ed92606692e5f8697/packages/ltx-pipelines/src/ltx_pipelines/", "ltx_pipelines"),
+            ),
+            present=("ltx_core/__init__.py", "ltx_pipelines/__init__.py"),
+        ),
+    ],
+    "corridorkey": [
+    DownloadSpec(
+        url="https://huggingface.co/nikopueringer/CorridorKey2.0/resolve/main/corridorkey_v2.safetensors",
+        md5="e3f2d366de74622f44b53bbc124bf2bf",
+        dest_dir="checkpoints/corridorkey/weights",
+        size_mb=2538,
+    ),
+    DownloadSpec(
+        url="https://huggingface.co/nikopueringer/CorridorKey2.0/resolve/main/foundation_stats.safetensors",
+        md5="c0b09287bd506e6503bbd81a037e44bb",
+        dest_dir="checkpoints/corridorkey/weights",
+        size_mb=1,
+    ),
+    DownloadSpec(
+        url="https://huggingface.co/nvidia/C-RADIOv4-SO400M/resolve/c0457f5dc26ca145f954cd4fc5bb6114e5705ad8/README.md",
+        md5="77bc0e846f3a8d69467bcb1a9d3930c9",
+        dest_dir="checkpoints/corridorkey/vfms/cradio/C-RADIOv4-SO400M",
+        size_mb=1,
+    ),
+    DownloadSpec(
+        url="https://huggingface.co/nvidia/C-RADIOv4-SO400M/resolve/c0457f5dc26ca145f954cd4fc5bb6114e5705ad8/adaptor_attn.py",
+        md5="906b33b56acce669af1a94adba4a1eab",
+        dest_dir="checkpoints/corridorkey/vfms/cradio/C-RADIOv4-SO400M",
+        size_mb=1,
+    ),
+    DownloadSpec(
+        url="https://huggingface.co/nvidia/C-RADIOv4-SO400M/resolve/c0457f5dc26ca145f954cd4fc5bb6114e5705ad8/adaptor_base.py",
+        md5="879c7f7898d6d11956753e5161bfe60e",
+        dest_dir="checkpoints/corridorkey/vfms/cradio/C-RADIOv4-SO400M",
+        size_mb=1,
+    ),
+    DownloadSpec(
+        url="https://huggingface.co/nvidia/C-RADIOv4-SO400M/resolve/c0457f5dc26ca145f954cd4fc5bb6114e5705ad8/adaptor_generic.py",
+        md5="95e7d04520a829390379fcbded6befee",
+        dest_dir="checkpoints/corridorkey/vfms/cradio/C-RADIOv4-SO400M",
+        size_mb=1,
+    ),
+    DownloadSpec(
+        url="https://huggingface.co/nvidia/C-RADIOv4-SO400M/resolve/c0457f5dc26ca145f954cd4fc5bb6114e5705ad8/adaptor_mlp.py",
+        md5="e2800bffaa0f5a3f1e92bb0d72d9a79e",
+        dest_dir="checkpoints/corridorkey/vfms/cradio/C-RADIOv4-SO400M",
+        size_mb=1,
+    ),
+    DownloadSpec(
+        url="https://huggingface.co/nvidia/C-RADIOv4-SO400M/resolve/c0457f5dc26ca145f954cd4fc5bb6114e5705ad8/adaptor_module_factory.py",
+        md5="e9400511a7c623d41f781a0bdaccfd22",
+        dest_dir="checkpoints/corridorkey/vfms/cradio/C-RADIOv4-SO400M",
+        size_mb=1,
+    ),
+    DownloadSpec(
+        url="https://huggingface.co/nvidia/C-RADIOv4-SO400M/resolve/c0457f5dc26ca145f954cd4fc5bb6114e5705ad8/adaptor_registry.py",
+        md5="c635e68de6ebb85e74e1831d66c5bc94",
+        dest_dir="checkpoints/corridorkey/vfms/cradio/C-RADIOv4-SO400M",
+        size_mb=1,
+    ),
+    DownloadSpec(
+        url="https://huggingface.co/nvidia/C-RADIOv4-SO400M/resolve/c0457f5dc26ca145f954cd4fc5bb6114e5705ad8/cls_token.py",
+        md5="0647e7b8a5d05b51cd313228d01f2364",
+        dest_dir="checkpoints/corridorkey/vfms/cradio/C-RADIOv4-SO400M",
+        size_mb=1,
+    ),
+    DownloadSpec(
+        url="https://huggingface.co/nvidia/C-RADIOv4-SO400M/resolve/c0457f5dc26ca145f954cd4fc5bb6114e5705ad8/common.py",
+        md5="eeb75c36549b54fc946732c2b5be8425",
+        dest_dir="checkpoints/corridorkey/vfms/cradio/C-RADIOv4-SO400M",
+        size_mb=1,
+    ),
+    DownloadSpec(
+        url="https://huggingface.co/nvidia/C-RADIOv4-SO400M/resolve/c0457f5dc26ca145f954cd4fc5bb6114e5705ad8/config.json",
+        md5="616543e1c6f51a8aff65f5c2ecfa88b6",
+        dest_dir="checkpoints/corridorkey/vfms/cradio/C-RADIOv4-SO400M",
+        size_mb=1,
+    ),
+    DownloadSpec(
+        url="https://huggingface.co/nvidia/C-RADIOv4-SO400M/resolve/c0457f5dc26ca145f954cd4fc5bb6114e5705ad8/dinov2_arch.py",
+        md5="90ccfd4395432d2824505d21ce18e541",
+        dest_dir="checkpoints/corridorkey/vfms/cradio/C-RADIOv4-SO400M",
+        size_mb=1,
+    ),
+    DownloadSpec(
+        url="https://huggingface.co/nvidia/C-RADIOv4-SO400M/resolve/c0457f5dc26ca145f954cd4fc5bb6114e5705ad8/dual_hybrid_vit.py",
+        md5="f5313117292a55b1d1314ef506deaed5",
+        dest_dir="checkpoints/corridorkey/vfms/cradio/C-RADIOv4-SO400M",
+        size_mb=1,
+    ),
+    DownloadSpec(
+        url="https://huggingface.co/nvidia/C-RADIOv4-SO400M/resolve/c0457f5dc26ca145f954cd4fc5bb6114e5705ad8/enable_cpe_support.py",
+        md5="2115ad6048083729c21e00603a736034",
+        dest_dir="checkpoints/corridorkey/vfms/cradio/C-RADIOv4-SO400M",
+        size_mb=1,
+    ),
+    DownloadSpec(
+        url="https://huggingface.co/nvidia/C-RADIOv4-SO400M/resolve/c0457f5dc26ca145f954cd4fc5bb6114e5705ad8/enable_damp.py",
+        md5="8385628da69c0a3a715ae91f04a099a9",
+        dest_dir="checkpoints/corridorkey/vfms/cradio/C-RADIOv4-SO400M",
+        size_mb=1,
+    ),
+    DownloadSpec(
+        url="https://huggingface.co/nvidia/C-RADIOv4-SO400M/resolve/c0457f5dc26ca145f954cd4fc5bb6114e5705ad8/enable_spectral_reparam.py",
+        md5="0e209a1c0589c93635bde9a3f5f509f2",
+        dest_dir="checkpoints/corridorkey/vfms/cradio/C-RADIOv4-SO400M",
+        size_mb=1,
+    ),
+    DownloadSpec(
+        url="https://huggingface.co/nvidia/C-RADIOv4-SO400M/resolve/c0457f5dc26ca145f954cd4fc5bb6114e5705ad8/eradio_model.py",
+        md5="835f3f1f99b87636f7530b251c369e2c",
+        dest_dir="checkpoints/corridorkey/vfms/cradio/C-RADIOv4-SO400M",
+        size_mb=1,
+    ),
+    DownloadSpec(
+        url="https://huggingface.co/nvidia/C-RADIOv4-SO400M/resolve/c0457f5dc26ca145f954cd4fc5bb6114e5705ad8/extra_models.py",
+        md5="8f039e8329e50de2eaab698d9c854eb2",
+        dest_dir="checkpoints/corridorkey/vfms/cradio/C-RADIOv4-SO400M",
+        size_mb=1,
+    ),
+    DownloadSpec(
+        url="https://huggingface.co/nvidia/C-RADIOv4-SO400M/resolve/c0457f5dc26ca145f954cd4fc5bb6114e5705ad8/extra_timm_models.py",
+        md5="8b3d253017c3998e33259d464e16e365",
+        dest_dir="checkpoints/corridorkey/vfms/cradio/C-RADIOv4-SO400M",
+        size_mb=1,
+    ),
+    DownloadSpec(
+        url="https://huggingface.co/nvidia/C-RADIOv4-SO400M/resolve/c0457f5dc26ca145f954cd4fc5bb6114e5705ad8/feature_normalizer.py",
+        md5="e3b445bf84cd42b6ebb4f07df88b20f6",
+        dest_dir="checkpoints/corridorkey/vfms/cradio/C-RADIOv4-SO400M",
+        size_mb=1,
+    ),
+    DownloadSpec(
+        url="https://huggingface.co/nvidia/C-RADIOv4-SO400M/resolve/c0457f5dc26ca145f954cd4fc5bb6114e5705ad8/forward_intermediates.py",
+        md5="27ce2cd05a15dff25586ce6eb0e96332",
+        dest_dir="checkpoints/corridorkey/vfms/cradio/C-RADIOv4-SO400M",
+        size_mb=1,
+    ),
+    DownloadSpec(
+        url="https://huggingface.co/nvidia/C-RADIOv4-SO400M/resolve/c0457f5dc26ca145f954cd4fc5bb6114e5705ad8/hf_model.py",
+        md5="d4bf654d240647e6a5d93228f03b6550",
+        dest_dir="checkpoints/corridorkey/vfms/cradio/C-RADIOv4-SO400M",
+        size_mb=1,
+    ),
+    DownloadSpec(
+        url="https://huggingface.co/nvidia/C-RADIOv4-SO400M/resolve/c0457f5dc26ca145f954cd4fc5bb6114e5705ad8/input_conditioner.py",
+        md5="cc6da64c4601f1f1fa5065a44523f577",
+        dest_dir="checkpoints/corridorkey/vfms/cradio/C-RADIOv4-SO400M",
+        size_mb=1,
+    ),
+    DownloadSpec(
+        url="https://huggingface.co/nvidia/C-RADIOv4-SO400M/resolve/c0457f5dc26ca145f954cd4fc5bb6114e5705ad8/open_clip_adaptor.py",
+        md5="f2eb1553f1df562fe4c0cbdae37a0e21",
+        dest_dir="checkpoints/corridorkey/vfms/cradio/C-RADIOv4-SO400M",
+        size_mb=1,
+    ),
+    DownloadSpec(
+        url="https://huggingface.co/nvidia/C-RADIOv4-SO400M/resolve/c0457f5dc26ca145f954cd4fc5bb6114e5705ad8/preprocessor_config.json",
+        md5="b0ebf9fbdc2853dc7b299868cdd4d2e2",
+        dest_dir="checkpoints/corridorkey/vfms/cradio/C-RADIOv4-SO400M",
+        size_mb=1,
+    ),
+    DownloadSpec(
+        url="https://huggingface.co/nvidia/C-RADIOv4-SO400M/resolve/c0457f5dc26ca145f954cd4fc5bb6114e5705ad8/radio_model.py",
+        md5="ffb59624143bbf426469cb9eedb0fa33",
+        dest_dir="checkpoints/corridorkey/vfms/cradio/C-RADIOv4-SO400M",
+        size_mb=1,
+    ),
+    DownloadSpec(
+        url="https://huggingface.co/nvidia/C-RADIOv4-SO400M/resolve/c0457f5dc26ca145f954cd4fc5bb6114e5705ad8/siglip2_adaptor.py",
+        md5="bc7df1bfc758bc5a8580f59629f34511",
+        dest_dir="checkpoints/corridorkey/vfms/cradio/C-RADIOv4-SO400M",
+        size_mb=1,
+    ),
+    DownloadSpec(
+        url="https://huggingface.co/nvidia/C-RADIOv4-SO400M/resolve/c0457f5dc26ca145f954cd4fc5bb6114e5705ad8/utils.py",
+        md5="54334a4caca6979e05d02c4cce1c3b47",
+        dest_dir="checkpoints/corridorkey/vfms/cradio/C-RADIOv4-SO400M",
+        size_mb=1,
+    ),
+    DownloadSpec(
+        url="https://huggingface.co/nvidia/C-RADIOv4-SO400M/resolve/c0457f5dc26ca145f954cd4fc5bb6114e5705ad8/vit_patch_generator.py",
+        md5="dacdf116ee373a99f0ca0ca6a777c666",
+        dest_dir="checkpoints/corridorkey/vfms/cradio/C-RADIOv4-SO400M",
+        size_mb=1,
+    ),
+    DownloadSpec(
+        url="https://huggingface.co/nvidia/C-RADIOv4-SO400M/resolve/c0457f5dc26ca145f954cd4fc5bb6114e5705ad8/vitdet.py",
+        md5="86275c0aa1d32a01794ca49c88daeafe",
+        dest_dir="checkpoints/corridorkey/vfms/cradio/C-RADIOv4-SO400M",
+        size_mb=1,
+    ),
+    DownloadSpec(
+        url="https://huggingface.co/nvidia/C-RADIOv4-SO400M/resolve/c0457f5dc26ca145f954cd4fc5bb6114e5705ad8/model.safetensors",
+        md5="3fdff667bcfcf5b3a527572fd4258c47",
+        dest_dir="checkpoints/corridorkey/vfms/cradio/C-RADIOv4-SO400M",
+        size_mb=1645,
+    ),
+    DownloadSpec(
+        url="https://huggingface.co/Ruicheng/moge-2-vitb-normal/resolve/ca5f0e07ff01d3e5a364c1d954ed12ee1814b368/model.pt",
+        md5="1f3d11493af7b2099216f21e3b865700",
+        dest_dir="checkpoints/corridorkey/vfms/moge",
+        size_mb=400,
+    ),
+    DownloadSpec(
+        url="https://storage.googleapis.com/representations4d/checkpoints/pretrain_rvm_small16_256_204031069.npz",
+        md5="6496fa923f3eb5ab2225b55ea655eeed",
+        dest_dir="checkpoints/corridorkey/vfms/rvm",
+        size_mb=258,
+    ),
+    ],
+    # CorridorKey's code at the tested commit, unpacked next to sammie_main.py.
+    "corridorkey_code": [
+        DownloadSpec(
+            url="https://github.com/nikopueringer/CorridorKey2.0/archive/485f5e9ab759ead6138cc990776184b59d6ea971.zip",
+            md5=None,
+            dest_dir="temp",
+            name="CorridorKey2.0-485f5e9.zip",
+            size_mb=1,
+            extract=(("CorridorKey2.0-485f5e9ab759ead6138cc990776184b59d6ea971/", "CorridorKey2.0"),),
+            present=("CorridorKey2.0/corridorkey/runtime.py",),
+        ),
+    ],
+    # utils3d for CorridorKey's bundled MoGe; only fetched when it is not installed.
+    "utils3d": [
+        DownloadSpec(
+            url="https://github.com/EasternJournalist/utils3d/archive/83bfa5bda008803f6521ce9547f94023b8afeddd.zip",
+            md5=None,
+            dest_dir="temp",
+            name="utils3d-83bfa5b.zip",
+            size_mb=1,
+            extract=(("utils3d-83bfa5bda008803f6521ce9547f94023b8afeddd/utils3d/", "CorridorKey2.0/third_party/utils3d/utils3d"),),
+            present=("CorridorKey2.0/third_party/utils3d/utils3d/__init__.py",),
+        ),
+    ],
 }
 
 
