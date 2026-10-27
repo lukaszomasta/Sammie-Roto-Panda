@@ -1815,6 +1815,16 @@ class CorridorKeyManager(MattingManager):
         from PySide6.QtWidgets import QMessageBox
         from sammie.corridorkey import CK_DIR, CorridorKeyPipeline, missing_code, missing_files
 
+        # Check the GPU first, so nothing is downloaded on a machine that cannot run it
+        device = self._prepare_device(load_to_cpu)
+        if device.type != "cuda":
+            QMessageBox.warning(
+                parent_window,
+                "CorridorKey Not Supported",
+                "CorridorKey needs an NVIDIA GPU (CUDA). It does not run on Apple Silicon or on the CPU.",
+            )
+            return False
+
         # Download whatever is missing (nothing, on an offline copy with everything in place)
         missing = missing_code()
         if missing:
@@ -1843,7 +1853,6 @@ class CorridorKeyManager(MattingManager):
             )
             return False
 
-        device = self._prepare_device(load_to_cpu)
         try:
             self.pipeline = CorridorKeyPipeline(device)
         except Exception as e:
