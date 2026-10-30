@@ -57,6 +57,12 @@ def missing_code():
     return missing
 
 
+def missing_packages():
+    """Python packages CorridorKey imports that pip cannot fetch at runtime (see requirements.txt)."""
+    # C-RADIO's code imports distutils, which Python 3.12 removed; setuptools provides it.
+    return [] if importlib.util.find_spec("distutils") else ["setuptools"]
+
+
 def missing_files(models_dir=CK_DIR):
     return [f for f in REQUIRED if not os.path.exists(os.path.join(models_dir, f))]
 
@@ -108,7 +114,14 @@ class CorridorKeyPipeline:
             moge_checkpoint=root / MOGE,
             cradio_dir=root / CRADIO,
         )
-        self.model = runtime.load_model(self.paths, device="cuda")
+        try:
+            self.model = runtime.load_model(self.paths, device="cuda")
+        except Exception:
+            # The C-RADIO snapshot is imported by hand and stays in sys.modules half-loaded when
+            # it fails, so a retry would report a misleading missing attribute; drop it.
+            for name in [m for m in sys.modules if m.startswith("_corridorkey_cradio_snapshot")]:
+                del sys.modules[name]
+            raise
 
     def close(self):
         self.model = None

@@ -19,3 +19,5 @@ OpenImageIO~=3.1
 safetensors
 cloudpickle>=3.1
 pillow
+# panda.3.0: CorridorKey. C-RADIO imports distutils, removed in Python 3.12; setuptools provides it
+setuptools

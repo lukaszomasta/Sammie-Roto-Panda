@@ -1813,7 +1813,7 @@ class CorridorKeyManager(MattingManager):
 
     def load_matting_model(self, load_to_cpu=False, parent_window=None):
         from PySide6.QtWidgets import QMessageBox
-        from sammie.corridorkey import CK_DIR, CorridorKeyPipeline, missing_code, missing_files
+        from sammie.corridorkey import CK_DIR, CorridorKeyPipeline, missing_code, missing_files, missing_packages
 
         # Check the GPU first, so nothing is downloaded on a machine that cannot run it
         device = self._prepare_device(load_to_cpu)
@@ -1822,6 +1822,17 @@ class CorridorKeyManager(MattingManager):
                 parent_window,
                 "CorridorKey Not Supported",
                 "CorridorKey needs an NVIDIA GPU (CUDA). It does not run on Apple Silicon or on the CPU.",
+            )
+            return False
+
+        missing = missing_packages()
+        if missing:
+            QMessageBox.warning(
+                parent_window,
+                "Python Package Missing",
+                "CorridorKey needs these Python packages, which are not installed:\n\n" + "\n".join(missing)
+                + "\n\nInstall them with pip in Sammie's Python (for example "
+                "venv\\Scripts\\python.exe -m pip install setuptools), then restart Sammie.",
             )
             return False
 
@@ -1856,6 +1867,9 @@ class CorridorKeyManager(MattingManager):
         try:
             self.pipeline = CorridorKeyPipeline(device)
         except Exception as e:
+            import traceback
+
+            traceback.print_exc()
             print(f"Error loading CorridorKey: {e}")
             self.pipeline = None
             return False
